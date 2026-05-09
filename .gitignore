@@ -1,0 +1,11 @@
+.env
+*.env
+__pycache__/
+.pytest_cache/
+*.pyc
+*.pyo
+serviceAccountKey.json
+firebase-adminsdk*.json
+*.key
+*.pem
+.DS_Store
