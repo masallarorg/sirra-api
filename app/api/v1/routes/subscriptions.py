@@ -35,7 +35,7 @@ class CreditBalanceSyncResponse(BaseModel):
 
 class SelfiePremiumClaimRequest(BaseModel):
     consent_accepted: bool
-    selfie_added: bool = True
+    selfie_added: bool = False
     persona_tags: list[str] = []
     device_install_id: str | None = None
 
@@ -45,7 +45,7 @@ class SelfiePremiumClaimResponse(BaseModel):
     active: bool
     entitlement: str
     expires_at: str
-    provider: str = "welcome_persona"
+    provider: str = "welcome_trial"
     credits: int = 0
     access: dict[str, Any] = {}
 
@@ -106,7 +106,7 @@ async def subscription_products() -> dict[str, Any]:
             {"id": "nura_credits_75", "credits": 75},
         ],
         "rewarded_ads": {"reward_credits": 1, "daily_limit": 3},
-        "welcome_persona": {"premium_days": 1, "once_per_user": True, "once_per_device": True, "max_premium_devices": 2, "requires_explicit_consent": True},
+        "welcome_trial": {"premium_days": 1, "once_per_user": True, "once_per_device": True, "selfie_optional": True, "max_premium_devices": 2, "requires_explicit_consent": True},
     }
 
 
@@ -121,11 +121,11 @@ async def claim_welcome_persona_reward(
     ethnicity, health, or any sensitive attribute. It only unlocks an optional
     personalization profile and a one-time promotional trial after explicit consent.
     """
-    if not request.consent_accepted or not request.selfie_added:
+    if not request.consent_accepted:
         raise AppError(
-            error_code="WELCOME_PERSONA_CONSENT_REQUIRED",
-            user_message="Kişisel persona ödülü için selfie kullanım onayını vermelisin.",
-            developer_message="consent_accepted=false or selfie_added=false",
+            error_code="WELCOME_TRIAL_CONSENT_REQUIRED",
+            user_message="Başlangıç ödülü için onay vermelisin.",
+            developer_message="consent_accepted=false",
             status_code=422,
         )
     device_id = request.device_install_id or current_user.device_id
@@ -188,13 +188,13 @@ async def claim_welcome_persona_reward(
             "user_id": current_user.uid,
             "active": True,
             "entitlement": "premium",
-            "provider": "welcome_persona",
-            "product_id": "welcome_persona_1_day",
+            "provider": "welcome_trial",
+            "product_id": "welcome_trial_1_day",
             "expires_at": expires_at.isoformat(),
             "welcome_persona_claimed": True,
             "selfie_wheel_claimed": True,
-            "selfie_consent_accepted": True,
-            "selfie_persona_tags": [str(tag).strip() for tag in (request.persona_tags or []) if str(tag).strip()][:12],
+            "selfie_consent_accepted": bool(request.selfie_added),
+            "selfie_persona_tags": [str(tag).strip() for tag in (request.persona_tags or []) if str(tag).strip()][:12] if request.selfie_added else [],
             "promo_device_hash": hashed_device,
             "updated_at": now,
         }, merge=True)
@@ -202,7 +202,7 @@ async def claim_welcome_persona_reward(
             "claimed": True,
             "user_id": current_user.uid,
             "claimed_at": now,
-            "claim_type": "welcome_persona",
+            "claim_type": "welcome_trial",
         }, merge=True)
         transaction.set(monetization_ref, {
             "credits": credits,
@@ -215,7 +215,7 @@ async def claim_welcome_persona_reward(
         access = {
             "credits": credits,
             "charged_credits": 0,
-            "access_kind": "welcome_persona_trial",
+            "access_kind": "welcome_trial",
             "premium_daily_used": premium_used,
             "premium_daily_limit": 5,
             "premium_daily_remaining": max(0, 5 - premium_used),
@@ -231,7 +231,7 @@ async def claim_welcome_persona_reward(
         active=True,
         entitlement="premium",
         expires_at=expires_at.isoformat(),
-        provider="welcome_persona",
+        provider="welcome_trial",
         credits=credits,
         access=access,
     )
