@@ -19,8 +19,18 @@ def _active_premium(user_id: str) -> bool:
     if settings.mock_ai and settings.allow_mock_auth:
         return True
     db = _firestore_client()
-    snap = db.collection("subscriptions").document(user_id).get()
-    return _is_subscription_active(snap.to_dict() if snap.exists else None)
+    sub_snap = db.collection("subscriptions").document(user_id).get()
+    if _is_subscription_active(sub_snap.to_dict() if sub_snap.exists else None):
+        return True
+
+    # Test/transition fallback: some existing app builds mirror premium/pro status on users/{uid}.
+    # Firestore security rules should keep this server-controlled in production.
+    user_snap = db.collection("users").document(user_id).get()
+    user_data = user_snap.to_dict() if user_snap.exists else {}
+    if bool(user_data.get("is_premium") or user_data.get("is_pro")):
+        return True
+    entitlement = str(user_data.get("entitlement") or "").lower()
+    return entitlement in {"premium", "pro"}
 
 
 @router.post("/chat", response_model=LiveGuideResponse)
@@ -32,7 +42,7 @@ async def live_guide_chat(
     if not _active_premium(current_user.uid):
         raise AppError(
             error_code="LIVE_GUIDE_PRO_REQUIRED",
-            user_message="Canli Rehber sadece Pro uyelere aciktir.",
+            user_message="Canlı Rehber sadece Pro/Premium üyelere açıktır.",
             developer_message=f"uid={current_user.uid}",
             status_code=402,
         )
