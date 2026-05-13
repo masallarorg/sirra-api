@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     cors_origins: str = "*"
     rate_limit_per_minute: int = 18
     revenuecat_webhook_secret: str | None = None
+    google_play_package_name: str = "com.sirrafal.app"
+    google_play_service_account_json: str | None = None
+    google_play_service_account_path: str | None = None
     allow_client_credit_sync: bool = False
     trusted_hosts: str = "*"
 

@@ -1,5 +1,9 @@
 from datetime import UTC, datetime, timedelta
 from typing import Any
+import hashlib
+import json
+
+import httpx
 
 from fastapi import APIRouter, Depends, Header
 from pydantic import BaseModel, Field
@@ -11,6 +15,12 @@ from app.schemas.subscription import SubscriptionStatus
 from app.services.security_guard import device_hash, require_device_hash
 
 router = APIRouter()
+
+PREMIUM_PRODUCT_DURATIONS = {
+    "sirra_premium_weekly": 7,
+    "sirra_premium_monthly": 30,
+    "sirra_premium_yearly": 365,
+}
 
 CREDIT_PRODUCT_AMOUNTS = {
     "sirra_credits_10": 10,
@@ -35,6 +45,24 @@ class CreditBalanceSyncResponse(BaseModel):
     credits: int
     server_credits_before: int
     updated: bool
+
+
+
+class GooglePlayVerifyRequest(BaseModel):
+    product_id: str
+    purchase_token: str
+    is_subscription: bool = False
+    purchase_id: str | None = None
+    package_name: str | None = None
+
+
+class GooglePlayVerifyResponse(BaseModel):
+    user_id: str
+    product_id: str
+    processed: bool
+    entitlement: str = "free"
+    credits: int = 0
+    expires_at: str | None = None
 
 
 class SelfiePremiumClaimRequest(BaseModel):
@@ -81,6 +109,137 @@ def _firestore_client():
             status_code=503,
             retryable=True,
         ) from exc
+
+
+
+
+def _purchase_token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _google_play_product_kind(product_id: str) -> str:
+    if product_id in PREMIUM_PRODUCT_DURATIONS:
+        return "subscription"
+    if product_id in CREDIT_PRODUCT_AMOUNTS:
+        return "credit"
+    raise AppError(
+        error_code="GOOGLE_PLAY_PRODUCT_UNKNOWN",
+        user_message="Bu ürün uygulama tarafından tanınmıyor.",
+        developer_message=f"product_id={product_id}",
+        status_code=422,
+    )
+
+
+def _google_play_credentials():
+    try:
+        from google.oauth2 import service_account
+    except Exception as exc:
+        raise AppError(
+            error_code="GOOGLE_PLAY_AUTH_PACKAGE_MISSING",
+            user_message="Google Play doğrulama servisi hazır değil.",
+            developer_message=str(exc),
+            status_code=503,
+            retryable=True,
+        ) from exc
+
+    scopes = ["https://www.googleapis.com/auth/androidpublisher"]
+    if settings.google_play_service_account_json:
+        try:
+            info = json.loads(settings.google_play_service_account_json)
+            return service_account.Credentials.from_service_account_info(info, scopes=scopes)
+        except Exception as exc:
+            raise AppError(
+                error_code="GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_INVALID",
+                user_message="Google Play doğrulama anahtarı okunamadı.",
+                developer_message=str(exc),
+                status_code=503,
+                retryable=True,
+            ) from exc
+    if settings.google_play_service_account_path:
+        try:
+            return service_account.Credentials.from_service_account_file(settings.google_play_service_account_path, scopes=scopes)
+        except Exception as exc:
+            raise AppError(
+                error_code="GOOGLE_PLAY_SERVICE_ACCOUNT_FILE_INVALID",
+                user_message="Google Play doğrulama anahtarı okunamadı.",
+                developer_message=str(exc),
+                status_code=503,
+                retryable=True,
+            ) from exc
+    raise AppError(
+        error_code="GOOGLE_PLAY_SERVICE_ACCOUNT_MISSING",
+        user_message="Satın alma doğrulaması henüz yapılandırılmadı.",
+        developer_message="Set GOOGLE_PLAY_SERVICE_ACCOUNT_JSON or GOOGLE_PLAY_SERVICE_ACCOUNT_PATH in Render.",
+        status_code=503,
+        retryable=True,
+    )
+
+
+def _google_play_access_token() -> str:
+    try:
+        from google.auth.transport.requests import Request
+        credentials = _google_play_credentials()
+        credentials.refresh(Request())
+        return credentials.token
+    except AppError:
+        raise
+    except Exception as exc:
+        raise AppError(
+            error_code="GOOGLE_PLAY_ACCESS_TOKEN_FAILED",
+            user_message="Google Play satın alma doğrulaması yapılamadı.",
+            developer_message=str(exc),
+            status_code=503,
+            retryable=True,
+        ) from exc
+
+
+async def _google_play_get_purchase(*, product_id: str, purchase_token: str, is_subscription: bool, package_name: str) -> dict[str, Any]:
+    token = _google_play_access_token()
+    safe_token = purchase_token.strip()
+    if is_subscription:
+        url = f"https://androidpublisher.googleapis.com/androidpublisher/v3/applications/{package_name}/purchases/subscriptionsv2/tokens/{safe_token}"
+    else:
+        url = f"https://androidpublisher.googleapis.com/androidpublisher/v3/applications/{package_name}/purchases/products/{product_id}/tokens/{safe_token}"
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+    if response.status_code >= 400:
+        raise AppError(
+            error_code="GOOGLE_PLAY_PURCHASE_VERIFY_FAILED",
+            user_message="Google Play satın alma doğrulanamadı.",
+            developer_message=response.text[:1200],
+            status_code=400,
+        )
+    return response.json()
+
+
+async def _google_play_consume_product(*, product_id: str, purchase_token: str, package_name: str) -> None:
+    try:
+        token = _google_play_access_token()
+        url = f"https://androidpublisher.googleapis.com/androidpublisher/v3/applications/{package_name}/purchases/products/{product_id}/tokens/{purchase_token}:consume"
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post(url, headers={"Authorization": f"Bearer {token}"})
+        if response.status_code >= 400:
+            # Do not roll back granted credits after a successful purchase verification.
+            # The purchase token hash prevents duplicate credit grants.
+            print(f"Google Play consume failed product_id={product_id} status={response.status_code} body={response.text[:500]}")
+    except Exception as exc:
+        print(f"Google Play consume failed product_id={product_id}: {exc}")
+
+
+def _subscription_expiry_from_google(data: dict[str, Any], fallback_days: int) -> datetime:
+    line_items = data.get("lineItems") if isinstance(data.get("lineItems"), list) else []
+    expiry = None
+    for item in line_items:
+        if isinstance(item, dict) and item.get("expiryTime"):
+            expiry = str(item.get("expiryTime"))
+            break
+    if expiry:
+        try:
+            parsed = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+            return parsed.astimezone(UTC)
+        except Exception:
+            pass
+    return datetime.now(UTC) + timedelta(days=fallback_days)
 
 
 def _status_from_data(user_id: str, data: dict[str, Any] | None) -> SubscriptionStatus:
@@ -282,6 +441,151 @@ async def claim_rewarded_ad_credit(current_user: CurrentUser = Depends(require_c
     return RewardedCreditClaimResponse(user_id=current_user.uid, credits=credits, reward_credits=reward_credits, daily_rewarded_ads_used=used, daily_rewarded_ads_limit=daily_limit)
 
 
+
+
+@router.post("/google-play/verify", response_model=GooglePlayVerifyResponse)
+async def verify_google_play_purchase(
+    request: GooglePlayVerifyRequest,
+    current_user: CurrentUser = Depends(require_current_user),
+) -> GooglePlayVerifyResponse:
+    product_id = request.product_id.strip()
+    purchase_token = request.purchase_token.strip()
+    if not purchase_token:
+        raise AppError(
+            error_code="GOOGLE_PLAY_PURCHASE_TOKEN_MISSING",
+            user_message="Satın alma bilgisi eksik geldi.",
+            developer_message="purchase_token is empty",
+            status_code=422,
+        )
+
+    kind = _google_play_product_kind(product_id)
+    is_subscription = kind == "subscription"
+    if bool(request.is_subscription) != is_subscription:
+        raise AppError(
+            error_code="GOOGLE_PLAY_PURCHASE_TYPE_MISMATCH",
+            user_message="Satın alma türü ürünle eşleşmiyor.",
+            developer_message=f"product_id={product_id} is_subscription={request.is_subscription}",
+            status_code=422,
+        )
+
+    package_name = (request.package_name or settings.google_play_package_name or "com.sirrafal.app").strip()
+    if package_name != settings.google_play_package_name:
+        raise AppError(
+            error_code="GOOGLE_PLAY_PACKAGE_MISMATCH",
+            user_message="Satın alma uygulama paketiyle eşleşmiyor.",
+            developer_message=f"request={package_name} expected={settings.google_play_package_name}",
+            status_code=422,
+        )
+
+    google_data = await _google_play_get_purchase(
+        product_id=product_id,
+        purchase_token=purchase_token,
+        is_subscription=is_subscription,
+        package_name=package_name,
+    )
+
+    now = datetime.now(UTC)
+    token_hash = _purchase_token_hash(purchase_token)
+    db = _firestore_client()
+    purchase_ref = db.collection("google_play_purchases").document(token_hash)
+    user_ref = db.collection("users").document(current_user.uid)
+    sub_ref = db.collection("subscriptions").document(current_user.uid)
+    money_ref = db.collection("monetization").document(current_user.uid)
+
+    if is_subscription:
+        state = str(google_data.get("subscriptionState") or "")
+        if state not in {"SUBSCRIPTION_STATE_ACTIVE", "SUBSCRIPTION_STATE_IN_GRACE_PERIOD"}:
+            raise AppError(
+                error_code="GOOGLE_PLAY_SUBSCRIPTION_NOT_ACTIVE",
+                user_message="Premium satın alma aktif görünmüyor.",
+                developer_message=f"state={state} data={str(google_data)[:900]}",
+                status_code=400,
+            )
+        expires_at = _subscription_expiry_from_google(google_data, PREMIUM_PRODUCT_DURATIONS[product_id])
+        purchase_ref.set({
+            "user_id": current_user.uid,
+            "product_id": product_id,
+            "kind": "subscription",
+            "package_name": package_name,
+            "purchase_id": request.purchase_id,
+            "google_state": state,
+            "expires_at": expires_at.isoformat(),
+            "last_verified_at": now,
+            "google_data": google_data,
+        }, merge=True)
+        sub_ref.set({
+            "user_id": current_user.uid,
+            "active": True,
+            "entitlement": "premium",
+            "provider": "google_play",
+            "product_id": product_id,
+            "purchase_token_hash": token_hash,
+            "expires_at": expires_at.isoformat(),
+            "updated_at": now,
+        }, merge=True)
+        user_ref.set({"is_premium": True, "updated_at": now}, merge=True)
+        return GooglePlayVerifyResponse(
+            user_id=current_user.uid,
+            product_id=product_id,
+            processed=True,
+            entitlement="premium",
+            credits=0,
+            expires_at=expires_at.isoformat(),
+        )
+
+    purchase_state = int(google_data.get("purchaseState", -1))
+    if purchase_state != 0:
+        raise AppError(
+            error_code="GOOGLE_PLAY_PRODUCT_NOT_PURCHASED",
+            user_message="Kredi satın alma aktif görünmüyor.",
+            developer_message=f"purchaseState={purchase_state} data={str(google_data)[:900]}",
+            status_code=400,
+        )
+
+    from firebase_admin import firestore
+    credit_amount = CREDIT_PRODUCT_AMOUNTS[product_id]
+    snapshot = purchase_ref.get()
+    if snapshot.exists:
+        money_snap = money_ref.get()
+        money = money_snap.to_dict() if money_snap.exists else {}
+        return GooglePlayVerifyResponse(
+            user_id=current_user.uid,
+            product_id=product_id,
+            processed=False,
+            entitlement="credits",
+            credits=int((money or {}).get("credits") or 0),
+        )
+
+    purchase_ref.set({
+        "user_id": current_user.uid,
+        "product_id": product_id,
+        "kind": "credit",
+        "package_name": package_name,
+        "purchase_id": request.purchase_id,
+        "credits_added": credit_amount,
+        "google_purchase_state": purchase_state,
+        "processed_at": now,
+        "google_data": google_data,
+    })
+    money_ref.set({
+        "credits": firestore.Increment(credit_amount),
+        "welcome_credits_granted": True,
+        "last_credit_product_id": product_id,
+        "last_credit_purchase_token_hash": token_hash,
+        "updated_at": now,
+    }, merge=True)
+    await _google_play_consume_product(product_id=product_id, purchase_token=purchase_token, package_name=package_name)
+    money_snap = money_ref.get()
+    money = money_snap.to_dict() if money_snap.exists else {}
+    return GooglePlayVerifyResponse(
+        user_id=current_user.uid,
+        product_id=product_id,
+        processed=True,
+        entitlement="credits",
+        credits=int((money or {}).get("credits") or 0),
+    )
+
+
 @router.get("/status", response_model=SubscriptionStatus)
 async def subscription_status(current_user: CurrentUser = Depends(require_current_user)) -> SubscriptionStatus:
     db = _firestore_client()
@@ -297,7 +601,7 @@ async def sync_credit_balance(
     """Bring the backend credit balance up to the authenticated device balance.
 
     The mobile app can add credits immediately after an in-app purchase, while the
-    RevenueCat webhook may arrive later or may be disabled in development. Fortune
+    Google Play purchase verification may arrive slightly later in development. Fortune
     generation is charged on the backend, so the backend must not see a lower
     credit balance than the user's signed-in device shows.
 
@@ -311,7 +615,7 @@ async def sync_credit_balance(
     data = snapshot.to_dict() if snapshot.exists else {}
     before = int((data or {}).get("credits") or 0)
     # Production security: the client must never be able to mint credits by sending an arbitrary balance.
-    # Credits are increased by Google Play/RevenueCat webhook, rewarded-ad claim, or admin tools only.
+    # Credits are increased by Google Play verification, rewarded-ad claim, or admin tools only.
     if settings.allow_client_credit_sync:
         target = max(before, int(request.credits))
     else:
