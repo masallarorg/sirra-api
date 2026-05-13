@@ -13,6 +13,10 @@ from app.services.security_guard import device_hash, require_device_hash
 router = APIRouter()
 
 CREDIT_PRODUCT_AMOUNTS = {
+    "sirra_credits_10": 10,
+    "sirra_credits_30_v1": 30,
+    "sirra_credits_75": 75,
+    # Backward-compatible legacy IDs. Keep them so old test builds/webhooks do not break.
     "credits_10": 10,
     "credits_30": 30,
     "credits_75": 75,
@@ -96,14 +100,14 @@ def _status_from_data(user_id: str, data: dict[str, Any] | None) -> Subscription
 async def subscription_products() -> dict[str, Any]:
     return {
         "premium": [
-            {"id": "nura_premium_weekly", "title": "Haftalık Premium", "daily_free_fortunes": 5},
-            {"id": "nura_premium_monthly", "title": "1 Aylık Premium", "daily_free_fortunes": 5},
-            {"id": "nura_premium_annual", "title": "Yıllık Premium", "daily_free_fortunes": 5},
+            {"id": "sirra_premium_weekly", "title": "Haftalık Premium", "daily_free_fortunes": 5, "duration_days": 7},
+            {"id": "sirra_premium_monthly", "title": "Aylık Premium", "daily_free_fortunes": 5, "duration_days": 30},
+            {"id": "sirra_premium_yearly", "title": "Yıllık Premium", "daily_free_fortunes": 5, "duration_days": 365},
         ],
         "credits": [
-            {"id": "nura_credits_10", "credits": 10},
-            {"id": "nura_credits_30", "credits": 30},
-            {"id": "nura_credits_75", "credits": 75},
+            {"id": "sirra_credits_10", "credits": 10},
+            {"id": "sirra_credits_30_v1", "credits": 30},
+            {"id": "sirra_credits_75", "credits": 75},
         ],
         "rewarded_ads": {"reward_credits": 1, "daily_limit": 3},
         "welcome_trial": {"premium_days": 1, "once_per_user": True, "once_per_device": True, "selfie_optional": True, "max_premium_devices": 2, "requires_explicit_consent": True},
