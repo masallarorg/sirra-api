@@ -433,12 +433,33 @@ async def claim_rewarded_ad_credit(current_user: CurrentUser = Depends(require_c
         )
     credits += reward_credits
     used += 1
+    now = datetime.now(UTC)
     ref.set({
         "credits": credits,
         "daily_date": today,
         "rewarded_ads_used": used,
-        "updated_at": datetime.now(UTC),
+        "updated_at": now,
     }, merge=True)
+    try:
+        claim_payload = {
+            "uid": current_user.uid,
+            "amount": reward_credits,
+            "source": "admob_rewarded",
+            "ad_network": "admob",
+            "daily_date": today,
+            "daily_used_after": used,
+            "daily_limit": daily_limit,
+            "created_at": now,
+        }
+        db.collection("rewarded_ad_claims").add(claim_payload)
+        db.collection("credit_ledger").add({
+            **claim_payload,
+            "type": "rewarded_ad",
+            "reason": "AdMob rewarded ad completed",
+            "balance_after": credits,
+        })
+    except Exception as exc:
+        print(f"rewarded ad claim log failed uid={current_user.uid}: {exc}")
     return RewardedCreditClaimResponse(user_id=current_user.uid, credits=credits, reward_credits=reward_credits, daily_rewarded_ads_used=used, daily_rewarded_ads_limit=daily_limit)
 
 
