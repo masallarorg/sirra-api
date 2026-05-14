@@ -63,6 +63,7 @@ class GooglePlayVerifyResponse(BaseModel):
     entitlement: str = "free"
     credits: int = 0
     expires_at: str | None = None
+    access: dict[str, Any] = Field(default_factory=dict)
 
 
 class SelfiePremiumClaimRequest(BaseModel):
@@ -79,7 +80,7 @@ class SelfiePremiumClaimResponse(BaseModel):
     expires_at: str
     provider: str = "welcome_trial"
     credits: int = 0
-    access: dict[str, Any] = {}
+    access: dict[str, Any] = Field(default_factory=dict)
 
 
 class RewardedCreditClaimResponse(BaseModel):
@@ -524,13 +525,37 @@ async def verify_google_play_purchase(
             "updated_at": now,
         }, merge=True)
         user_ref.set({"is_premium": True, "updated_at": now}, merge=True)
+        money_snap = money_ref.get()
+        money = money_snap.to_dict() if money_snap.exists else {}
+        today = now.date().isoformat()
+        daily_date = str((money or {}).get("daily_date") or today)
+        premium_used = int((money or {}).get("premium_used") or 0)
+        free_used = int((money or {}).get("free_used") or 0)
+        if daily_date != today:
+            premium_used = 0
+            free_used = 0
+            daily_date = today
+            money_ref.set({"daily_date": today, "premium_used": 0, "free_used": 0, "updated_at": now}, merge=True)
+        access = {
+            "credits": int((money or {}).get("credits") or 0),
+            "charged_credits": 0,
+            "access_kind": "premium_purchase",
+            "premium_daily_used": premium_used,
+            "premium_daily_limit": 5,
+            "premium_daily_remaining": max(0, 5 - premium_used),
+            "standard_free_daily_used": free_used,
+            "daily_date": daily_date,
+            "is_premium": True,
+            "expires_at": expires_at.isoformat(),
+        }
         return GooglePlayVerifyResponse(
             user_id=current_user.uid,
             product_id=product_id,
             processed=True,
             entitlement="premium",
-            credits=0,
+            credits=access["credits"],
             expires_at=expires_at.isoformat(),
+            access=access,
         )
 
     purchase_state = int(google_data.get("purchaseState", -1))
@@ -554,6 +579,7 @@ async def verify_google_play_purchase(
             processed=False,
             entitlement="credits",
             credits=int((money or {}).get("credits") or 0),
+            access={"credits": int((money or {}).get("credits") or 0)},
         )
 
     purchase_ref.set({
@@ -583,6 +609,7 @@ async def verify_google_play_purchase(
         processed=True,
         entitlement="credits",
         credits=int((money or {}).get("credits") or 0),
+        access={"credits": int((money or {}).get("credits") or 0)},
     )
 
 
