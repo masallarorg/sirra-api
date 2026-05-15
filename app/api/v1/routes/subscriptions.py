@@ -340,8 +340,8 @@ async def claim_welcome_persona_reward(
 
         expires_at = now + timedelta(days=1)
         credits = int(money.get("credits") or 0)
-        premium_used = int(money.get("premium_used") or 0)
-        free_used = int(money.get("free_used") or 0)
+        premium_used = max(int(money.get("premium_used") or 0), int(money.get("premium_daily_used") or 0))
+        free_used = max(int(money.get("free_used") or 0), int(money.get("standard_free_daily_used") or 0))
         daily_date = str(money.get("daily_date") or today)
         if daily_date != today:
             premium_used = 0
@@ -372,7 +372,9 @@ async def claim_welcome_persona_reward(
             "credits": credits,
             "daily_date": daily_date,
             "premium_used": premium_used,
+            "premium_daily_used": premium_used,
             "free_used": free_used,
+            "standard_free_daily_used": free_used,
             "updated_at": now,
         }, merge=True)
         transaction.set(user_ref, {"is_premium": True, "updated_at": now}, merge=True)
@@ -381,9 +383,11 @@ async def claim_welcome_persona_reward(
             "charged_credits": 0,
             "access_kind": "welcome_trial",
             "premium_daily_used": premium_used,
+            "premium_used": premium_used,
             "premium_daily_limit": 5,
             "premium_daily_remaining": max(0, 5 - premium_used),
             "standard_free_daily_used": free_used,
+            "free_used": free_used,
             "daily_date": daily_date,
             "is_premium": True,
         }
@@ -585,21 +589,23 @@ async def verify_google_play_purchase(
         money = money_snap.to_dict() if money_snap.exists else {}
         today = now.date().isoformat()
         daily_date = str((money or {}).get("daily_date") or today)
-        premium_used = int((money or {}).get("premium_used") or 0)
-        free_used = int((money or {}).get("free_used") or 0)
+        premium_used = max(int((money or {}).get("premium_used") or 0), int((money or {}).get("premium_daily_used") or 0))
+        free_used = max(int((money or {}).get("free_used") or 0), int((money or {}).get("standard_free_daily_used") or 0))
         if daily_date != today:
             premium_used = 0
             free_used = 0
             daily_date = today
-            money_ref.set({"daily_date": today, "premium_used": 0, "free_used": 0, "updated_at": now}, merge=True)
+            money_ref.set({"daily_date": today, "premium_used": 0, "premium_daily_used": 0, "free_used": 0, "standard_free_daily_used": 0, "updated_at": now}, merge=True)
         access = {
             "credits": int((money or {}).get("credits") or 0),
             "charged_credits": 0,
             "access_kind": "premium_purchase",
             "premium_daily_used": premium_used,
+            "premium_used": premium_used,
             "premium_daily_limit": 5,
             "premium_daily_remaining": max(0, 5 - premium_used),
             "standard_free_daily_used": free_used,
+            "free_used": free_used,
             "daily_date": daily_date,
             "is_premium": True,
             "expires_at": expires_at.isoformat(),

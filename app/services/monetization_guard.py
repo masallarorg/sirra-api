@@ -150,8 +150,8 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
         # and mirror the result back to both documents.
         credits = max(monetization_credits, user_credits)
         daily_date = str(data.get("daily_date") or user_data.get("daily_date") or "")
-        premium_used = int(data.get("premium_used") or 0)
-        free_used = int(data.get("free_used") or 0)
+        premium_used = max(int(data.get("premium_used") or 0), int(data.get("premium_daily_used") or 0), int(user_data.get("premium_used") or 0), int(user_data.get("premium_daily_used") or 0))
+        free_used = max(int(data.get("free_used") or 0), int(data.get("standard_free_daily_used") or 0), int(user_data.get("free_used") or 0), int(user_data.get("standard_free_daily_used") or 0))
         if daily_date != today:
             premium_used = 0
             free_used = 0
@@ -171,16 +171,18 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
                 "charged_credits": charged_credits,
                 "access_kind": access_kind,
                 "premium_daily_used": premium_after,
+                "premium_used": premium_after,
                 "premium_daily_limit": PREMIUM_DAILY_LIMIT,
                 "premium_daily_remaining": max(0, PREMIUM_DAILY_LIMIT - premium_after),
                 "standard_free_daily_used": free_after,
+                "free_used": free_after,
                 "daily_date": today,
                 "is_premium": bool(active_premium),
             }
 
         if active_premium and premium_used < PREMIUM_DAILY_LIMIT:
             premium_after = premium_used + 1
-            patch = {**base_patch, "credits": credits, "premium_used": premium_after, "free_used": free_used}
+            patch = {**base_patch, "credits": credits, "premium_used": premium_after, "premium_daily_used": premium_after, "free_used": free_used, "standard_free_daily_used": free_used}
             transaction.set(access_ref, patch, merge=True)
             transaction.set(user_ref, {"credits": credits, "credits_updated_at": now, "updated_at": now}, merge=True)
             if active_devices_patch is not None:
@@ -190,7 +192,7 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
 
         if not active_premium and fortune_type == "oracle" and free_used < 1:
             free_after = free_used + 1
-            patch = {**base_patch, "credits": credits, "premium_used": premium_used, "free_used": free_after}
+            patch = {**base_patch, "credits": credits, "premium_used": premium_used, "premium_daily_used": premium_used, "free_used": free_after, "standard_free_daily_used": free_after}
             transaction.set(access_ref, patch, merge=True)
             transaction.set(user_ref, {"credits": credits, "credits_updated_at": now, "updated_at": now}, merge=True)
             access_state = state(access_kind="standard_free", charged_credits=0, credits_after=credits, premium_after=premium_used, free_after=free_after)
@@ -198,7 +200,7 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
 
         if credits >= cost:
             credits_after = credits - cost
-            patch = {**base_patch, "credits": credits_after, "premium_used": premium_used, "free_used": free_used, "last_charged_credits": cost}
+            patch = {**base_patch, "credits": credits_after, "premium_used": premium_used, "premium_daily_used": premium_used, "free_used": free_used, "standard_free_daily_used": free_used, "last_charged_credits": cost}
             transaction.set(access_ref, patch, merge=True)
             transaction.set(user_ref, {"credits": credits_after, "credits_updated_at": now, "updated_at": now}, merge=True)
             access_state = state(access_kind="credits", charged_credits=cost, credits_after=credits_after, premium_after=premium_used, free_after=free_used)
@@ -226,8 +228,8 @@ async def refund_fortune_access(reservation: FortuneReservation) -> None:
         data = snap.to_dict() if snap.exists else {}
         user_data = user_snap.to_dict() if user_snap.exists else {}
         credits = max(int(data.get("credits") or 0), int(user_data.get("credits") or 0))
-        premium_used = int(data.get("premium_used") or 0)
-        free_used = int(data.get("free_used") or 0)
+        premium_used = max(int(data.get("premium_used") or 0), int(data.get("premium_daily_used") or 0), int(user_data.get("premium_used") or 0), int(user_data.get("premium_daily_used") or 0))
+        free_used = max(int(data.get("free_used") or 0), int(data.get("standard_free_daily_used") or 0), int(user_data.get("free_used") or 0), int(user_data.get("standard_free_daily_used") or 0))
         now = datetime.now(UTC)
         patch: dict[str, Any] = {"updated_at": now}
         if reservation.kind == "credits":
@@ -235,8 +237,10 @@ async def refund_fortune_access(reservation: FortuneReservation) -> None:
             patch["credits_updated_at"] = now
         elif reservation.kind == "premium_daily":
             patch["premium_used"] = max(0, premium_used - 1)
+            patch["premium_daily_used"] = patch["premium_used"]
         elif reservation.kind == "standard_free":
             patch["free_used"] = max(0, free_used - 1)
+            patch["standard_free_daily_used"] = patch["free_used"]
         ref.set(patch, merge=True)
         if "credits" in patch:
             user_ref.set({"credits": patch["credits"], "credits_updated_at": now, "updated_at": now}, merge=True)
