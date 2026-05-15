@@ -269,7 +269,7 @@ async def subscription_products() -> dict[str, Any]:
             {"id": "sirra_credits_30_v1", "credits": 30},
             {"id": "sirra_credits_75", "credits": 75},
         ],
-        "rewarded_ads": {"reward_credits": 1, "daily_limit": 3},
+        "rewarded_ads": {"reward_credits": 2, "daily_limit": 3},
         "welcome_trial": {"premium_days": 1, "once_per_user": True, "once_per_device": True, "selfie_optional": True, "max_premium_devices": 2, "requires_explicit_consent": True},
     }
 
@@ -411,17 +411,22 @@ async def claim_selfie_premium_day(
 
 @router.post("/rewarded-ad/claim", response_model=RewardedCreditClaimResponse)
 async def claim_rewarded_ad_credit(current_user: CurrentUser = Depends(require_current_user)) -> RewardedCreditClaimResponse:
-    """Grant one backend-owned rewarded-ad credit after the mobile ad callback completes."""
+    """Grant backend-owned rewarded-ad credits after the mobile ad callback completes."""
     db = _firestore_client()
     ref = db.collection("monetization").document(current_user.uid)
     today = datetime.now(UTC).date().isoformat()
-    reward_credits = 1
+    reward_credits = 2
     daily_limit = 3
+    user_ref = db.collection("users").document(current_user.uid)
     snapshot = ref.get()
+    user_snapshot = user_ref.get()
     data = snapshot.to_dict() if snapshot.exists else {}
-    credits = int(data.get("credits") or 0)
-    daily_date = str(data.get("daily_date") or "")
-    used = int(data.get("rewarded_ads_used") or 0)
+    user_data = user_snapshot.to_dict() if user_snapshot.exists else {}
+    monetization_credits = int(data.get("credits") or 0)
+    user_credits = int(user_data.get("credits") or 0)
+    credits = max(monetization_credits, user_credits)
+    daily_date = str(data.get("daily_date") or user_data.get("rewarded_ads_daily_date") or user_data.get("daily_date") or "")
+    used = int(data.get("rewarded_ads_used") or data.get("daily_rewarded_ads_used") or user_data.get("rewarded_ads_used") or user_data.get("daily_rewarded_ads_used") or 0)
     if daily_date != today:
         used = 0
     if used >= daily_limit:
@@ -445,7 +450,7 @@ async def claim_rewarded_ad_credit(current_user: CurrentUser = Depends(require_c
         "last_rewarded_ad_at": now,
         "updated_at": now,
     }, merge=True)
-    db.collection("users").document(current_user.uid).set({
+    user_ref.set({
         "credits": credits,
         "daily_rewarded_ads_used": used,
         "daily_rewarded_ads_limit": daily_limit,
