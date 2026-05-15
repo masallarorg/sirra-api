@@ -411,54 +411,71 @@ async def claim_selfie_premium_day(
 
 @router.post("/rewarded-ad/claim", response_model=RewardedCreditClaimResponse)
 async def claim_rewarded_ad_credit(current_user: CurrentUser = Depends(require_current_user)) -> RewardedCreditClaimResponse:
-    """Grant backend-owned rewarded-ad credits after the mobile ad callback completes."""
+    """Grant backend-owned rewarded-ad credits after the mobile ad callback completes.
+
+    The balance is updated in a Firestore transaction and mirrored to both
+    monetization/{uid} and users/{uid}. This prevents the old users document or
+    old monetization document from overwriting the fresh rewarded-ad credit after
+    logout/login.
+    """
     db = _firestore_client()
-    ref = db.collection("monetization").document(current_user.uid)
+    from firebase_admin import firestore
+
+    money_ref = db.collection("monetization").document(current_user.uid)
+    user_ref = db.collection("users").document(current_user.uid)
     today = datetime.now(UTC).date().isoformat()
     reward_credits = 2
     daily_limit = 3
-    user_ref = db.collection("users").document(current_user.uid)
-    snapshot = ref.get()
-    user_snapshot = user_ref.get()
-    data = snapshot.to_dict() if snapshot.exists else {}
-    user_data = user_snapshot.to_dict() if user_snapshot.exists else {}
-    monetization_credits = int(data.get("credits") or 0)
-    user_credits = int(user_data.get("credits") or 0)
-    credits = max(monetization_credits, user_credits)
-    daily_date = str(data.get("daily_date") or user_data.get("rewarded_ads_daily_date") or user_data.get("daily_date") or "")
-    used = int(data.get("rewarded_ads_used") or data.get("daily_rewarded_ads_used") or user_data.get("rewarded_ads_used") or user_data.get("daily_rewarded_ads_used") or 0)
-    if daily_date != today:
-        used = 0
-    if used >= daily_limit:
-        raise AppError(
-            error_code="REWARDED_AD_DAILY_LIMIT",
-            user_message="Bugünkü reklamla kredi kazanma hakkın doldu. Yarın tekrar deneyebilirsin.",
-            developer_message=f"uid={current_user.uid} used={used}",
-            status_code=429,
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _claim(transaction):
+        money_snap = money_ref.get(transaction=transaction)
+        user_snap = user_ref.get(transaction=transaction)
+        money = money_snap.to_dict() if money_snap.exists else {}
+        user_data = user_snap.to_dict() if user_snap.exists else {}
+
+        monetization_credits = int((money or {}).get("credits") or 0)
+        user_credits = int((user_data or {}).get("credits") or 0)
+        credits_before = max(monetization_credits, user_credits)
+        daily_date = str((money or {}).get("daily_date") or (user_data or {}).get("rewarded_ads_daily_date") or (user_data or {}).get("daily_date") or "")
+        used = int(
+            (money or {}).get("rewarded_ads_used")
+            or (money or {}).get("daily_rewarded_ads_used")
+            or (user_data or {}).get("rewarded_ads_used")
+            or (user_data or {}).get("daily_rewarded_ads_used")
+            or 0
         )
-    credits += reward_credits
-    used += 1
-    now = datetime.now(UTC)
-    ref.set({
-        "credits": credits,
-        "daily_date": today,
-        "rewarded_ads_used": used,
-        "daily_rewarded_ads_used": used,
-        "daily_rewarded_ads_limit": daily_limit,
-        "last_rewarded_credit_amount": reward_credits,
-        "last_rewarded_source": "backend_admob_rewarded",
-        "last_rewarded_ad_at": now,
-        "updated_at": now,
-    }, merge=True)
-    user_ref.set({
-        "credits": credits,
-        "daily_rewarded_ads_used": used,
-        "daily_rewarded_ads_limit": daily_limit,
-        "last_rewarded_credit_amount": reward_credits,
-        "last_rewarded_source": "backend_admob_rewarded",
-        "last_rewarded_ad_at": now,
-        "updated_at": now,
-    }, merge=True)
+        if daily_date != today:
+            used = 0
+        if used >= daily_limit:
+            raise AppError(
+                error_code="REWARDED_AD_DAILY_LIMIT",
+                user_message="Bugünkü reklamla kredi kazanma hakkın doldu. Yarın tekrar deneyebilirsin.",
+                developer_message=f"uid={current_user.uid} used={used}",
+                status_code=429,
+            )
+
+        credits_after = credits_before + reward_credits
+        used_after = used + 1
+        now = datetime.now(UTC)
+        payload = {
+            "credits": credits_after,
+            "daily_date": today,
+            "rewarded_ads_used": used_after,
+            "daily_rewarded_ads_used": used_after,
+            "daily_rewarded_ads_limit": daily_limit,
+            "last_rewarded_credit_amount": reward_credits,
+            "last_rewarded_source": "backend_admob_rewarded",
+            "last_rewarded_ad_at": now,
+            "credits_updated_at": now,
+            "updated_at": now,
+        }
+        transaction.set(money_ref, payload, merge=True)
+        transaction.set(user_ref, payload, merge=True)
+        return credits_after, used_after, now
+
+    credits, used, now = _claim(transaction)
     try:
         claim_payload = {
             "uid": current_user.uid,
@@ -480,7 +497,6 @@ async def claim_rewarded_ad_credit(current_user: CurrentUser = Depends(require_c
     except Exception as exc:
         print(f"rewarded ad claim log failed uid={current_user.uid}: {exc}")
     return RewardedCreditClaimResponse(user_id=current_user.uid, credits=credits, reward_credits=reward_credits, daily_rewarded_ads_used=used, daily_rewarded_ads_limit=daily_limit)
-
 
 
 
@@ -612,14 +628,17 @@ async def verify_google_play_purchase(
     snapshot = purchase_ref.get()
     if snapshot.exists:
         money_snap = money_ref.get()
+        user_snap = user_ref.get()
         money = money_snap.to_dict() if money_snap.exists else {}
+        user_data = user_snap.to_dict() if user_snap.exists else {}
+        current_credits = max(int((money or {}).get("credits") or 0), int((user_data or {}).get("credits") or 0))
         return GooglePlayVerifyResponse(
             user_id=current_user.uid,
             product_id=product_id,
             processed=False,
             entitlement="credits",
-            credits=int((money or {}).get("credits") or 0),
-            access={"credits": int((money or {}).get("credits") or 0)},
+            credits=current_credits,
+            access={"credits": current_credits},
         )
 
     purchase_ref.set({
@@ -633,23 +652,30 @@ async def verify_google_play_purchase(
         "processed_at": now,
         "google_data": google_data,
     })
-    money_ref.set({
-        "credits": firestore.Increment(credit_amount),
+    money_snap_before = money_ref.get()
+    user_snap_before = user_ref.get()
+    money_before = money_snap_before.to_dict() if money_snap_before.exists else {}
+    user_before = user_snap_before.to_dict() if user_snap_before.exists else {}
+    base_credits = max(int((money_before or {}).get("credits") or 0), int((user_before or {}).get("credits") or 0))
+    next_credits = base_credits + credit_amount
+    credit_payload = {
+        "credits": next_credits,
         "welcome_credits_granted": True,
         "last_credit_product_id": product_id,
         "last_credit_purchase_token_hash": token_hash,
+        "credits_updated_at": now,
         "updated_at": now,
-    }, merge=True)
+    }
+    money_ref.set(credit_payload, merge=True)
+    user_ref.set(credit_payload, merge=True)
     await _google_play_consume_product(product_id=product_id, purchase_token=purchase_token, package_name=package_name)
-    money_snap = money_ref.get()
-    money = money_snap.to_dict() if money_snap.exists else {}
     return GooglePlayVerifyResponse(
         user_id=current_user.uid,
         product_id=product_id,
         processed=True,
         entitlement="credits",
-        credits=int((money or {}).get("credits") or 0),
-        access={"credits": int((money or {}).get("credits") or 0)},
+        credits=next_credits,
+        access={"credits": next_credits, "credits_updated_at": now.isoformat()},
     )
 
 
@@ -677,10 +703,13 @@ async def sync_credit_balance(
     """
     db = _firestore_client()
     ref = db.collection("monetization").document(current_user.uid)
+    user_ref = db.collection("users").document(current_user.uid)
     now = datetime.now(UTC)
     snapshot = ref.get()
+    user_snapshot = user_ref.get()
     data = snapshot.to_dict() if snapshot.exists else {}
-    before = int((data or {}).get("credits") or 0)
+    user_data = user_snapshot.to_dict() if user_snapshot.exists else {}
+    before = max(int((data or {}).get("credits") or 0), int((user_data or {}).get("credits") or 0))
     # Production security: the client must never be able to mint credits by sending an arbitrary balance.
     # Credits are increased by Google Play verification, rewarded-ad claim, or admin tools only.
     if settings.allow_client_credit_sync:
@@ -688,16 +717,16 @@ async def sync_credit_balance(
     else:
         target = before
     updated = target != before or not snapshot.exists
-    ref.set(
-        {
-            "credits": target,
-            "welcome_credits_granted": True,
-            "last_client_credit_sync_at": now,
-            "last_client_credit_sync_value": int(request.credits),
-            "updated_at": now,
-        },
-        merge=True,
-    )
+    sync_payload = {
+        "credits": target,
+        "welcome_credits_granted": True,
+        "last_client_credit_sync_at": now,
+        "last_client_credit_sync_value": int(request.credits),
+        "credits_updated_at": now,
+        "updated_at": now,
+    }
+    ref.set(sync_payload, merge=True)
+    user_ref.set(sync_payload, merge=True)
     return CreditBalanceSyncResponse(
         user_id=current_user.uid,
         credits=target,
@@ -735,19 +764,24 @@ async def revenuecat_webhook(payload: dict, x_webhook_secret: str | None = Heade
     now = datetime.now(UTC)
     credit_amount = CREDIT_PRODUCT_AMOUNTS.get(product_id)
     if credit_amount and event_type in {"INITIAL_PURCHASE", "NON_RENEWING_PURCHASE", "PURCHASE"}:
-        from firebase_admin import firestore
-
-        db.collection("monetization").document(app_user_id).set(
-            {
-                "credits": firestore.Increment(credit_amount),
-                "welcome_credits_granted": True,
-                "last_credit_product_id": product_id,
-                "last_credit_event_type": event_type,
-                "updated_at": now,
-            },
-            merge=True,
-        )
-        return {"received": True, "user_id": app_user_id, "credits_added": credit_amount}
+        money_ref = db.collection("monetization").document(app_user_id)
+        user_ref = db.collection("users").document(app_user_id)
+        money_snap = money_ref.get()
+        user_snap = user_ref.get()
+        money = money_snap.to_dict() if money_snap.exists else {}
+        user_data = user_snap.to_dict() if user_snap.exists else {}
+        next_credits = max(int((money or {}).get("credits") or 0), int((user_data or {}).get("credits") or 0)) + credit_amount
+        credit_payload = {
+            "credits": next_credits,
+            "welcome_credits_granted": True,
+            "last_credit_product_id": product_id,
+            "last_credit_event_type": event_type,
+            "credits_updated_at": now,
+            "updated_at": now,
+        }
+        money_ref.set(credit_payload, merge=True)
+        user_ref.set(credit_payload, merge=True)
+        return {"received": True, "user_id": app_user_id, "credits_added": credit_amount, "credits": next_credits}
 
     db.collection("subscriptions").document(app_user_id).set(
         {
