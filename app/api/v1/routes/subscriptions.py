@@ -438,6 +438,20 @@ async def claim_rewarded_ad_credit(current_user: CurrentUser = Depends(require_c
         "credits": credits,
         "daily_date": today,
         "rewarded_ads_used": used,
+        "daily_rewarded_ads_used": used,
+        "daily_rewarded_ads_limit": daily_limit,
+        "last_rewarded_credit_amount": reward_credits,
+        "last_rewarded_source": "backend_admob_rewarded",
+        "last_rewarded_ad_at": now,
+        "updated_at": now,
+    }, merge=True)
+    db.collection("users").document(current_user.uid).set({
+        "credits": credits,
+        "daily_rewarded_ads_used": used,
+        "daily_rewarded_ads_limit": daily_limit,
+        "last_rewarded_credit_amount": reward_credits,
+        "last_rewarded_source": "backend_admob_rewarded",
+        "last_rewarded_ad_at": now,
         "updated_at": now,
     }, merge=True)
     try:
