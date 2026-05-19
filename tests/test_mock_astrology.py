@@ -19,3 +19,14 @@ async def test_mock_daily_horoscope_is_detailed(monkeypatch):
 
 def test_normalize_turkish_sign():
     assert normalize_sign("koç") == "Koc"
+
+
+@pytest.mark.asyncio
+async def test_mock_daily_horoscope_differs_by_sign(monkeypatch):
+    monkeypatch.setattr(settings, "mock_ai", True)
+    koc = await generate_daily_horoscope(DailyHoroscopeRequest(sign="koc"), CurrentUser(uid="u1"))
+    boga = await generate_daily_horoscope(DailyHoroscopeRequest(sign="boga"), CurrentUser(uid="u1"))
+    assert koc.sign == "Koc"
+    assert boga.sign == "Boga"
+    assert koc.full_reading != boga.full_reading
+    assert koc.lucky_color != boga.lucky_color

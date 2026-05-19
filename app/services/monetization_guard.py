@@ -7,6 +7,7 @@ from typing import Any
 from app.core.config import settings
 from app.core.errors import AppError
 from app.services.security_guard import premium_device_allowed
+from app.services.daily_access_clock import daily_access_key
 
 FORTUNE_COSTS: dict[str, int] = {
     "coffee": 5,
@@ -40,7 +41,7 @@ def fortune_cost(fortune_type: str) -> int:
 
 
 def _today_key() -> str:
-    return datetime.now(UTC).date().isoformat()
+    return daily_access_key()
 
 
 def _firestore_client():

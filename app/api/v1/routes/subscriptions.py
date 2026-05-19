@@ -13,6 +13,7 @@ from app.core.errors import AppError
 from app.core.security import CurrentUser, require_current_user
 from app.schemas.subscription import SubscriptionStatus
 from app.services.security_guard import device_hash, require_device_hash
+from app.services.daily_access_clock import daily_access_key
 
 router = APIRouter()
 
@@ -312,7 +313,7 @@ async def claim_welcome_persona_reward(
     device_ref = db.collection("promo_devices").document(hashed_device)
     transaction = db.transaction()
     now = datetime.now(UTC)
-    today = now.date().isoformat()
+    today = daily_access_key()
 
     @firestore.transactional
     def _claim(transaction):
@@ -427,7 +428,7 @@ async def claim_rewarded_ad_credit(current_user: CurrentUser = Depends(require_c
 
     money_ref = db.collection("monetization").document(current_user.uid)
     user_ref = db.collection("users").document(current_user.uid)
-    today = datetime.now(UTC).date().isoformat()
+    today = daily_access_key()
     reward_credits = 2
     daily_limit = 3
     transaction = db.transaction()
@@ -587,7 +588,7 @@ async def verify_google_play_purchase(
         user_ref.set({"is_premium": True, "updated_at": now}, merge=True)
         money_snap = money_ref.get()
         money = money_snap.to_dict() if money_snap.exists else {}
-        today = now.date().isoformat()
+        today = daily_access_key()
         daily_date = str((money or {}).get("daily_date") or today)
         premium_used = max(int((money or {}).get("premium_used") or 0), int((money or {}).get("premium_daily_used") or 0))
         free_used = max(int((money or {}).get("free_used") or 0), int((money or {}).get("standard_free_daily_used") or 0))
