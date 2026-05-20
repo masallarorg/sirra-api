@@ -1,11 +1,10 @@
-import base64
 import json
 from uuid import uuid4
 
-import httpx
 
 from app.core.config import settings
 from app.core.errors import AppError
+from app.services.openai_client import call_openai_responses, extract_output_text as extract_openai_output_text, image_data_url
 from app.schemas.fortune import (
     CoffeeFortuneResult,
     DetectedSymbol,
@@ -76,7 +75,7 @@ async def generate_coffee_fortune(
         input_content.append(
             {
                 "type": "input_image",
-                "image_url": f"data:image/jpeg;base64,{base64.b64encode(image).decode('ascii')}",
+                "image_url": image_data_url(image),
             }
         )
 
@@ -94,35 +93,13 @@ async def generate_coffee_fortune(
         },
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=75.0) as client:
-            response = await client.post(
-                "https://api.openai.com/v1/responses",
-                headers={
-                    "Authorization": f"Bearer {settings.openai_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
-    except httpx.RequestError as exc:
-        raise AppError(
-            error_code="OPENAI_COFFEE_NETWORK_ERROR",
-            user_message="Kahve fotoğrafları analiz edilirken bağlantı sorunu oluştu. Lütfen tekrar dene.",
-            developer_message=str(exc),
-            status_code=503,
-            retryable=True,
-        ) from exc
-
-    if response.status_code >= 400:
-        raise AppError(
-            error_code="OPENAI_COFFEE_RESPONSE_ERROR",
-            user_message="Kahve fotoğrafları analiz edilirken sorun oluştu. Lütfen tekrar dene.",
-            developer_message=response.text[:1600],
-            status_code=502,
-            retryable=True,
-        )
-
-    content = _extract_output_text(response.json())
+    response_json = await call_openai_responses(
+        payload,
+        error_code="OPENAI_COFFEE",
+        user_message="Kahve fotoğrafları analiz edilirken sorun oluştu. Lütfen tekrar dene.",
+        timeout_seconds=75.0,
+    )
+    content = _extract_output_text(response_json)
     try:
         data = json.loads(content)
     except json.JSONDecodeError as exc:
@@ -195,31 +172,13 @@ async def generate_dream_fortune(request: DreamFortuneRequest) -> DreamFortuneRe
         "input": [{"role": "user", "content": [{"type": "input_text", "text": json.dumps({"dream_text": request.dream_text, "profile": request.profile}, ensure_ascii=False)}]}],
         "text": {"format": {"type": "json_schema", "name": "dream_fortune", "strict": True, "schema": _dream_json_schema()}},
     }
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                "https://api.openai.com/v1/responses",
-                headers={"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"},
-                json=payload,
-            )
-    except httpx.RequestError as exc:
-        raise AppError(
-            error_code="OPENAI_DREAM_NETWORK_ERROR",
-            user_message="Rüya yorumu hazırlanırken bağlantı sorunu oluştu. Lütfen tekrar dene.",
-            developer_message=str(exc),
-            status_code=503,
-            retryable=True,
-        ) from exc
-
-    if response.status_code >= 400:
-        raise AppError(
-            error_code="OPENAI_DREAM_RESPONSE_ERROR",
-            user_message="Rüya yorumu hazırlanırken sorun oluştu. Lütfen tekrar dene.",
-            developer_message=response.text[:1600],
-            status_code=502,
-            retryable=True,
-        )
-    content = _extract_output_text(response.json())
+    response_json = await call_openai_responses(
+        payload,
+        error_code="OPENAI_DREAM",
+        user_message="Rüya yorumu hazırlanırken sorun oluştu. Lütfen tekrar dene.",
+        timeout_seconds=60.0,
+    )
+    content = _extract_output_text(response_json)
     try:
         data = json.loads(content)
     except json.JSONDecodeError as exc:
@@ -303,32 +262,13 @@ async def generate_generic_fortune(request: GenericFortuneRequest) -> GenericFor
         },
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=70.0) as client:
-            response = await client.post(
-                "https://api.openai.com/v1/responses",
-                headers={"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"},
-                json=payload,
-            )
-    except httpx.RequestError as exc:
-        raise AppError(
-            error_code="OPENAI_TEXT_FORTUNE_NETWORK_ERROR",
-            user_message="Fal yorumu hazırlanırken bağlantı sorunu oluştu. Lütfen tekrar dene.",
-            developer_message=str(exc),
-            status_code=503,
-            retryable=True,
-        ) from exc
-
-    if response.status_code >= 400:
-        raise AppError(
-            error_code="OPENAI_TEXT_FORTUNE_RESPONSE_ERROR",
-            user_message="Fal yorumu hazırlanırken sorun oluştu. Lütfen tekrar dene.",
-            developer_message=response.text[:1800],
-            status_code=502,
-            retryable=True,
-        )
-
-    content = _extract_output_text(response.json())
+    response_json = await call_openai_responses(
+        payload,
+        error_code="OPENAI_TEXT_FORTUNE",
+        user_message="Fal yorumu hazırlanırken sorun oluştu. Lütfen tekrar dene.",
+        timeout_seconds=70.0,
+    )
+    content = _extract_output_text(response_json)
     try:
         data = json.loads(content)
     except json.JSONDecodeError as exc:
@@ -392,7 +332,7 @@ async def generate_soulmate_fortune(*, user_id: str, profile: dict, image_bytes:
                 ensure_ascii=False,
             ),
         },
-        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('ascii')}"},
+        {"type": "input_image", "image_url": image_data_url(image_bytes)},
     ]
     payload = {
         "model": settings.openai_model,
@@ -400,30 +340,13 @@ async def generate_soulmate_fortune(*, user_id: str, profile: dict, image_bytes:
         "input": [{"role": "user", "content": input_content}],
         "text": {"format": {"type": "json_schema", "name": "soulmate_fortune", "strict": True, "schema": _generic_fortune_json_schema()}},
     }
-    try:
-        async with httpx.AsyncClient(timeout=80.0) as client:
-            response = await client.post(
-                "https://api.openai.com/v1/responses",
-                headers={"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"},
-                json=payload,
-            )
-    except httpx.RequestError as exc:
-        raise AppError(
-            error_code="OPENAI_SOULMATE_NETWORK_ERROR",
-            user_message="Ruh eşi portresi hazırlanırken bağlantı sorunu oluştu. Lütfen tekrar dene.",
-            developer_message=str(exc),
-            status_code=503,
-            retryable=True,
-        ) from exc
-    if response.status_code >= 400:
-        raise AppError(
-            error_code="OPENAI_SOULMATE_RESPONSE_ERROR",
-            user_message="Ruh eşi portresi hazırlanırken sorun oluştu. Lütfen tekrar dene.",
-            developer_message=response.text[:1800],
-            status_code=502,
-            retryable=True,
-        )
-    content = _extract_output_text(response.json())
+    response_json = await call_openai_responses(
+        payload,
+        error_code="OPENAI_SOULMATE",
+        user_message="Ruh eşi portresi hazırlanırken sorun oluştu. Lütfen tekrar dene.",
+        timeout_seconds=80.0,
+    )
+    content = _extract_output_text(response_json)
     try:
         data = json.loads(content)
     except json.JSONDecodeError as exc:
@@ -499,8 +422,8 @@ async def generate_palm_fortune(*, user_id: str, profile: dict, right_image_byte
             ),
         },
         {"type": "input_text", "text": "Aşağıdaki ilk görsel sağ el, ikinci görsel sol el avuç içidir."},
-        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{base64.b64encode(right_image_bytes).decode('ascii')}"},
-        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{base64.b64encode(left_image_bytes).decode('ascii')}"},
+        {"type": "input_image", "image_url": image_data_url(right_image_bytes)},
+        {"type": "input_image", "image_url": image_data_url(left_image_bytes)},
     ]
     payload = {
         "model": settings.openai_model,
@@ -508,30 +431,13 @@ async def generate_palm_fortune(*, user_id: str, profile: dict, right_image_byte
         "input": [{"role": "user", "content": input_content}],
         "text": {"format": {"type": "json_schema", "name": "palm_fortune", "strict": True, "schema": _generic_fortune_json_schema()}},
     }
-    try:
-        async with httpx.AsyncClient(timeout=85.0) as client:
-            response = await client.post(
-                "https://api.openai.com/v1/responses",
-                headers={"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"},
-                json=payload,
-            )
-    except httpx.RequestError as exc:
-        raise AppError(
-            error_code="OPENAI_PALM_NETWORK_ERROR",
-            user_message="El falı hazırlanırken bağlantı sorunu oluştu. Lütfen tekrar dene.",
-            developer_message=str(exc),
-            status_code=503,
-            retryable=True,
-        ) from exc
-    if response.status_code >= 400:
-        raise AppError(
-            error_code="OPENAI_PALM_RESPONSE_ERROR",
-            user_message="El falı hazırlanırken sorun oluştu. Lütfen tekrar dene.",
-            developer_message=response.text[:1800],
-            status_code=502,
-            retryable=True,
-        )
-    content = _extract_output_text(response.json())
+    response_json = await call_openai_responses(
+        payload,
+        error_code="OPENAI_PALM",
+        user_message="El falı hazırlanırken sorun oluştu. Lütfen tekrar dene.",
+        timeout_seconds=85.0,
+    )
+    content = _extract_output_text(response_json)
     try:
         data = json.loads(content)
     except json.JSONDecodeError as exc:
@@ -559,22 +465,10 @@ Make it as detailed as a premium coffee reading: layered, sectioned, forward-loo
 """.strip()
 
 def _extract_output_text(response_json: dict) -> str:
-    if isinstance(response_json.get("output_text"), str):
-        return response_json["output_text"]
-
-    texts: list[str] = []
-    for item in response_json.get("output", []):
-        for content in item.get("content", []):
-            if content.get("type") in {"output_text", "text"} and isinstance(content.get("text"), str):
-                texts.append(content["text"])
-    if texts:
-        return "\n".join(texts)
-    raise AppError(
-        error_code="OPENAI_OUTPUT_EMPTY",
+    return extract_openai_output_text(
+        response_json,
+        empty_error_code="OPENAI_OUTPUT_EMPTY",
         user_message="AI çıktısı boş geldi. Lütfen tekrar dene.",
-        developer_message=json.dumps(response_json)[:1200],
-        status_code=502,
-        retryable=True,
     )
 
 

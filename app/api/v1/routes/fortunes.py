@@ -11,6 +11,7 @@ from app.schemas.fortune import CoffeeFortuneResponse, DreamFortuneRequest, Drea
 from app.services.openai_fortune import generate_coffee_fortune, generate_dream_fortune, generate_generic_fortune, generate_palm_fortune, generate_soulmate_fortune
 from app.services.monetization_guard import reserve_fortune_access, refund_fortune_access
 from app.services.symbol_linker import find_cross_fortune_connections
+from app.services.image_validation import prepare_openai_image
 
 router = APIRouter()
 
@@ -63,15 +64,12 @@ async def coffee_fortune(
     image_bytes: list[bytes] = []
     for image in images:
         data = await image.read()
-        if len(data) < 1024:
-            raise AppError(
-                error_code="COFFEE_IMAGE_TOO_SMALL",
-                user_message="Fotoğraf çok küçük veya okunamadı. Lütfen fincanı daha net çekip tekrar yükle.",
-                developer_message=f"{image.filename} is {len(data)} bytes",
-                status_code=422,
-                retryable=True,
-            )
-        image_bytes.append(data)
+        prepared = prepare_openai_image(
+            data,
+            error_prefix="COFFEE_IMAGE",
+            user_message="Fotoğraf çok küçük veya okunamadı. Lütfen fincanı daha net çekip tekrar yükle.",
+        )
+        image_bytes.append(prepared.bytes)
 
     reservation = await reserve_fortune_access(user_id=current_user.uid, fortune_type="coffee", device_id=current_user.device_id)
     try:
@@ -104,16 +102,16 @@ async def palm_fortune(
     question: Annotated[str, Form()] = "",
     current_user: CurrentUser = Depends(require_current_user),
 ) -> GenericFortuneResponse:
-    right_data = await right_palm_image.read()
-    left_data = await left_palm_image.read()
-    if len(right_data) < 1024 or len(left_data) < 1024:
-        raise AppError(
-            error_code="PALM_IMAGE_TOO_SMALL",
-            user_message="Sağ ve sol el fotoğrafları okunamadı. Lütfen iki avuç içini de net çekip tekrar dene.",
-            developer_message=f"right={len(right_data)} left={len(left_data)}",
-            status_code=422,
-            retryable=True,
-        )
+    right_data = prepare_openai_image(
+        await right_palm_image.read(),
+        error_prefix="PALM_RIGHT_IMAGE",
+        user_message="Sağ el fotoğrafı okunamadı. Lütfen avuç içini daha net çekip tekrar dene.",
+    ).bytes
+    left_data = prepare_openai_image(
+        await left_palm_image.read(),
+        error_prefix="PALM_LEFT_IMAGE",
+        user_message="Sol el fotoğrafı okunamadı. Lütfen avuç içini daha net çekip tekrar dene.",
+    ).bytes
     try:
         profile = json.loads(profile_json or "{}")
     except json.JSONDecodeError as exc:
@@ -156,15 +154,11 @@ async def soulmate_fortune(
     theme: Annotated[str, Form()] = "Gizemli portre",
     current_user: CurrentUser = Depends(require_current_user),
 ) -> GenericFortuneResponse:
-    data = await selfie.read()
-    if len(data) < 1024:
-        raise AppError(
-            error_code="SOULMATE_SELFIE_TOO_SMALL",
-            user_message="Selfie fotoğrafı okunamadı. Lütfen daha net bir fotoğrafla tekrar dene.",
-            developer_message=f"selfie bytes={len(data)}",
-            status_code=422,
-            retryable=True,
-        )
+    data = prepare_openai_image(
+        await selfie.read(),
+        error_prefix="SOULMATE_SELFIE",
+        user_message="Selfie fotoğrafı okunamadı. Lütfen daha net bir fotoğrafla tekrar dene.",
+    ).bytes
     try:
         profile = json.loads(profile_json or "{}")
     except json.JSONDecodeError as exc:

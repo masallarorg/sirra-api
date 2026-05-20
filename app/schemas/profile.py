@@ -18,6 +18,6 @@ class UserProfile(BaseModel):
     notification_opt_in: bool = True
     selfie_path: str | None = None
     selfie_consent_accepted: bool = False
-    selfie_persona_tags: list[str] = []
+    selfie_persona_tags: list[str] = Field(default_factory=list)
     addressing_preference: str | None = None
     is_premium: bool = False

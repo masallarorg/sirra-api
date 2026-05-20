@@ -51,7 +51,7 @@ class PremiumLock(BaseModel):
 class CrossFortuneConnection(BaseModel):
     message: str
     related_fortune_id: str | None = None
-    related_symbols: list[str] = []
+    related_symbols: list[str] = Field(default_factory=list)
 
 
 class CoffeeFortuneResult(BaseModel):
@@ -64,7 +64,7 @@ class CoffeeFortuneResult(BaseModel):
     career: FortuneSection
     money: FortuneSection
     family: FortuneSection
-    cross_fortune_connections: list[CrossFortuneConnection] = []
+    cross_fortune_connections: list[CrossFortuneConnection] = Field(default_factory=list)
     premium_locks: list[PremiumLock]
 
 
@@ -78,7 +78,7 @@ class CoffeeFortuneResponse(BaseModel):
 class DreamFortuneRequest(BaseModel):
     user_id: str
     dream_text: str
-    profile: dict = {}
+    profile: dict = Field(default_factory=dict)
 
 
 class DreamFortuneResult(BaseModel):
@@ -88,7 +88,7 @@ class DreamFortuneResult(BaseModel):
     summary: str
     symbols: list[str]
     interpretation: str
-    cross_fortune_connections: list[CrossFortuneConnection] = []
+    cross_fortune_connections: list[CrossFortuneConnection] = Field(default_factory=list)
     premium_locks: list[PremiumLock]
 
 
@@ -107,8 +107,8 @@ class FortuneDetailBlock(BaseModel):
 class GenericFortuneRequest(BaseModel):
     type_id: str
     focus: str = "Genel enerji"
-    payload: dict = {}
-    profile: dict = {}
+    payload: dict = Field(default_factory=dict)
+    profile: dict = Field(default_factory=dict)
 
 
 class GenericFortuneResult(BaseModel):
@@ -118,8 +118,8 @@ class GenericFortuneResult(BaseModel):
     summary: str
     primary_message: str
     sections: list[FortuneDetailBlock]
-    symbols: list[str] = []
-    cross_fortune_connections: list[CrossFortuneConnection] = []
+    symbols: list[str] = Field(default_factory=list)
+    cross_fortune_connections: list[CrossFortuneConnection] = Field(default_factory=list)
     premium_locks: list[PremiumLock]
 
 

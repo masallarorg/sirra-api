@@ -28,6 +28,14 @@ class ErrorResponse(BaseModel):
     correlation_id: str
 
 
+def _developer_message(message: str) -> str:
+    from app.core.config import settings
+
+    if settings.environment.lower() in {"prod", "production"}:
+        return ""
+    return message
+
+
 def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
@@ -37,7 +45,7 @@ def register_error_handlers(app: FastAPI) -> None:
             content=ErrorResponse(
                 error_code=exc.error_code,
                 user_message=exc.user_message,
-                developer_message=exc.developer_message,
+                developer_message=_developer_message(exc.developer_message),
                 retryable=exc.retryable,
                 correlation_id=correlation_id,
             ).model_dump(),
@@ -51,7 +59,7 @@ def register_error_handlers(app: FastAPI) -> None:
             content=ErrorResponse(
                 error_code="INTERNAL_SERVER_ERROR",
                 user_message="Beklenmeyen bir sorun oluştu. Lütfen tekrar dene.",
-                developer_message=str(exc),
+                developer_message=_developer_message(str(exc)),
                 retryable=True,
                 correlation_id=correlation_id,
             ).model_dump(),

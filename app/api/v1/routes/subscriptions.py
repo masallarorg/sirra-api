@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from typing import Any
 import hashlib
+import logging
 import json
 
 import httpx
@@ -16,6 +17,7 @@ from app.services.security_guard import device_hash, require_device_hash
 from app.services.daily_access_clock import daily_access_key
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 PREMIUM_PRODUCT_DURATIONS = {
     "sirra_premium_weekly": 7,
@@ -70,7 +72,7 @@ class GooglePlayVerifyResponse(BaseModel):
 class SelfiePremiumClaimRequest(BaseModel):
     consent_accepted: bool
     selfie_added: bool = False
-    persona_tags: list[str] = []
+    persona_tags: list[str] = Field(default_factory=list)
     device_install_id: str | None = None
 
 
@@ -223,9 +225,9 @@ async def _google_play_consume_product(*, product_id: str, purchase_token: str, 
         if response.status_code >= 400:
             # Do not roll back granted credits after a successful purchase verification.
             # The purchase token hash prevents duplicate credit grants.
-            print(f"Google Play consume failed product_id={product_id} status={response.status_code} body={response.text[:500]}")
+            logger.warning("Google Play consume failed product_id=%s status=%s body=%s", product_id, response.status_code, response.text[:500])
     except Exception as exc:
-        print(f"Google Play consume failed product_id={product_id}: {exc}")
+        logger.warning("Google Play consume failed product_id=%s: %s", product_id, exc)
 
 
 def _subscription_expiry_from_google(data: dict[str, Any], fallback_days: int) -> datetime:
@@ -500,7 +502,7 @@ async def claim_rewarded_ad_credit(current_user: CurrentUser = Depends(require_c
             "balance_after": credits,
         })
     except Exception as exc:
-        print(f"rewarded ad claim log failed uid={current_user.uid}: {exc}")
+        logger.warning("rewarded ad claim log failed uid=%s: %s", current_user.uid, exc)
     return RewardedCreditClaimResponse(user_id=current_user.uid, credits=credits, reward_credits=reward_credits, daily_rewarded_ads_used=used, daily_rewarded_ads_limit=daily_limit)
 
 

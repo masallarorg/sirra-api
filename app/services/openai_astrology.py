@@ -2,11 +2,11 @@ import json
 from datetime import date
 from uuid import uuid4
 
-import httpx
 
 from app.core.config import settings
 from app.core.errors import AppError
 from app.core.security import CurrentUser
+from app.services.openai_client import call_openai_responses, extract_output_text as extract_openai_output_text
 from app.services.daily_horoscope_cache import get_cached_daily_horoscope, save_daily_horoscope_cache
 from app.services.daily_access_clock import daily_access_key
 from app.schemas.astrology import (
@@ -103,35 +103,13 @@ async def generate_daily_horoscope(request: DailyHoroscopeRequest, user: Current
         },
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            response = await client.post(
-                "https://api.openai.com/v1/responses",
-                headers={
-                    "Authorization": f"Bearer {settings.openai_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
-    except httpx.RequestError as exc:
-        raise AppError(
-            error_code="OPENAI_NETWORK_ERROR",
-            user_message="Burc yorumu uretilirken baglanti sorunu olustu. Lutfen tekrar dene.",
-            developer_message=str(exc),
-            status_code=503,
-            retryable=True,
-        ) from exc
-
-    if response.status_code >= 400:
-        raise AppError(
-            error_code="OPENAI_RESPONSE_ERROR",
-            user_message="Burc yorumu uretilirken sorun olustu. Lutfen tekrar dene.",
-            developer_message=response.text[:1200],
-            status_code=502,
-            retryable=True,
-        )
-
-    content = _extract_output_text(response.json())
+    response_json = await call_openai_responses(
+        payload,
+        error_code="OPENAI_HOROSCOPE",
+        user_message="Burç yorumu üretilirken sorun oluştu. Lütfen tekrar dene.",
+        timeout_seconds=45.0,
+    )
+    content = _extract_output_text(response_json)
     try:
         data = json.loads(content)
         data["sign"] = sign
@@ -152,22 +130,10 @@ async def generate_daily_horoscope(request: DailyHoroscopeRequest, user: Current
 
 
 def _extract_output_text(response_json: dict) -> str:
-    if isinstance(response_json.get("output_text"), str):
-        return response_json["output_text"]
-
-    texts: list[str] = []
-    for item in response_json.get("output", []):
-        for content in item.get("content", []):
-            if content.get("type") in {"output_text", "text"} and isinstance(content.get("text"), str):
-                texts.append(content["text"])
-    if texts:
-        return "\n".join(texts)
-    raise AppError(
-        error_code="OPENAI_OUTPUT_EMPTY",
-        user_message="Burc yorumu uretilemedi. Lutfen tekrar dene.",
-        developer_message=json.dumps(response_json)[:1200],
-        status_code=502,
-        retryable=True,
+    return extract_openai_output_text(
+        response_json,
+        empty_error_code="OPENAI_OUTPUT_EMPTY",
+        user_message="Burç yorumu üretilemedi. Lütfen tekrar dene.",
     )
 
 

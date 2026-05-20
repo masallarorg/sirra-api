@@ -1,9 +1,7 @@
-import base64
 import json
 from datetime import UTC, datetime
 from typing import Annotated
 
-import httpx
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 
 from app.core.config import settings
@@ -11,6 +9,8 @@ from app.core.errors import AppError
 from app.core.security import CurrentUser, require_current_user
 from app.schemas.live_guide import LiveGuideRequest, LiveGuideResponse
 from app.services.monetization_guard import _firestore_client, _is_subscription_active
+from app.services.image_validation import prepare_openai_image
+from app.services.openai_client import call_openai_responses, extract_output_text, image_data_url
 
 router = APIRouter()
 
@@ -55,7 +55,14 @@ async def live_guide_chat(
             developer_message=str(exc),
             status_code=422,
         ) from exc
-    image_bytes = await selfie.read() if selfie is not None else None
+    image_bytes = None
+    if selfie is not None:
+        image_bytes = prepare_openai_image(
+            await selfie.read(),
+            error_prefix="LIVE_GUIDE_SELFIE",
+            user_message="Selfie fotoğrafı okunamadı. Lütfen daha net bir fotoğrafla tekrar dene.",
+            min_bytes=512,
+        ).bytes
     reply = await _generate_reply(current_user.uid, request, image_bytes)
     return LiveGuideResponse(reply=reply, messages_remaining=9)
 
@@ -83,36 +90,29 @@ async def _generate_reply(user_id: str, request: LiveGuideRequest, image_bytes: 
         {"type": "input_text", "text": json.dumps({"message": request.message, "context": rules}, ensure_ascii=False)}
     ]
     if image_bytes and len(image_bytes) > 512:
-        content.append({"type": "input_image", "image_url": "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode("ascii")})
+        content.append({"type": "input_image", "image_url": image_data_url(image_bytes)})
     payload = {
         "model": settings.openai_model,
         "instructions": "Sen Sirra Canli Rehberisin. Kisa, derin, sezgisel ve profesyonel fal/astroloji sohbeti yap. Kendini insan falci olarak tanitma. Hassas ozellik tahmini yapma.",
         "input": [{"role": "user", "content": content}],
     }
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                "https://api.openai.com/v1/responses",
-                headers={"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"},
-                json=payload,
-            )
-        if response.status_code >= 400:
-            return _fallback_reply(request)
-        return _extract_text(response.json()) or _fallback_reply(request)
+        response_json = await call_openai_responses(
+            payload,
+            error_code="OPENAI_LIVE_GUIDE",
+            user_message="Canlı Rehber yanıtı hazırlanırken sorun oluştu. Lütfen tekrar dene.",
+            timeout_seconds=60.0,
+        )
+        return _extract_text(response_json) or _fallback_reply(request)
     except Exception:
         return _fallback_reply(request)
 
 
 def _extract_text(data: dict) -> str:
-    if isinstance(data.get("output_text"), str):
-        return data["output_text"].strip()
-    parts: list[str] = []
-    for item in data.get("output", []) or []:
-        for content in item.get("content", []) or []:
-            text = content.get("text")
-            if isinstance(text, str):
-                parts.append(text)
-    return "\n".join(parts).strip()
+    try:
+        return extract_output_text(data, empty_error_code="OPENAI_LIVE_GUIDE_EMPTY").strip()
+    except AppError:
+        return ""
 
 
 def _fallback_reply(request: LiveGuideRequest) -> str:
