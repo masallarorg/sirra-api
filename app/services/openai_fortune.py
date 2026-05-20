@@ -14,6 +14,9 @@ from app.schemas.fortune import (
     FortuneDetailBlock,
     GenericFortuneRequest,
     GenericFortuneResult,
+    FollowUpQuestion,
+    PersonalInsight,
+    ShareCard,
     ImageRegion,
     PremiumLock,
     SymbolAnimation,
@@ -29,7 +32,7 @@ async def generate_coffee_fortune(
 ) -> CoffeeFortuneResult:
     image_bytes = image_bytes or []
     if settings.mock_ai:
-        return _mock_coffee_result(image_count=image_count or len(image_bytes) or 1)
+        return _augment_coffee_result(_mock_coffee_result(image_count=image_count or len(image_bytes) or 1), profile)
 
     if not settings.openai_api_key:
         raise AppError(
@@ -125,7 +128,7 @@ async def generate_coffee_fortune(
 
     data["fortune_id"] = data.get("fortune_id") or f"coffee_{uuid4().hex[:10]}"
     data["type"] = "coffee"
-    return CoffeeFortuneResult.model_validate(data)
+    return _augment_coffee_result(CoffeeFortuneResult.model_validate(data), profile)
 
 
 async def generate_dream_fortune(request: DreamFortuneRequest) -> DreamFortuneResult:
@@ -139,7 +142,7 @@ async def generate_dream_fortune(request: DreamFortuneRequest) -> DreamFortuneRe
         if not symbols:
             symbols = ["yol"]
 
-        return DreamFortuneResult(
+        result = DreamFortuneResult(
             fortune_id=f"dream_{uuid4().hex[:10]}",
             title="Rüyanda Tekrar Eden İşaret",
             summary="Rüyan, son dönemde zihninde büyüyen bir konunun sembollerle tekrarlandığını gösteriyor.",
@@ -156,6 +159,7 @@ async def generate_dream_fortune(request: DreamFortuneRequest) -> DreamFortuneRe
                 )
             ],
         )
+        return _augment_dream_result(result, request.profile)
 
     if not settings.openai_api_key:
         raise AppError(
@@ -191,7 +195,7 @@ async def generate_dream_fortune(request: DreamFortuneRequest) -> DreamFortuneRe
         ) from exc
     data["fortune_id"] = data.get("fortune_id") or f"dream_{uuid4().hex[:10]}"
     data["type"] = "dream"
-    return DreamFortuneResult.model_validate(data)
+    return _augment_dream_result(DreamFortuneResult.model_validate(data), request.profile)
 
 
 async def generate_generic_fortune(request: GenericFortuneRequest) -> GenericFortuneResult:
@@ -206,7 +210,7 @@ async def generate_generic_fortune(request: GenericFortuneRequest) -> GenericFor
         )
 
     if settings.mock_ai:
-        return _mock_generic_result(type_id=type_id, request=request)
+        return _augment_generic_result(_mock_generic_result(type_id=type_id, request=request), request.profile, request.focus)
 
     if not settings.openai_api_key:
         raise AppError(
@@ -282,7 +286,7 @@ async def generate_generic_fortune(request: GenericFortuneRequest) -> GenericFor
 
     data["fortune_id"] = data.get("fortune_id") or f"{type_id}_{uuid4().hex[:10]}"
     data["type"] = type_id
-    return GenericFortuneResult.model_validate(data)
+    return _augment_generic_result(GenericFortuneResult.model_validate(data), profile, profile.get("focus") or "Aşk")
 
 
 async def generate_soulmate_fortune(*, user_id: str, profile: dict, image_bytes: bytes) -> GenericFortuneResult:
@@ -301,7 +305,7 @@ async def generate_soulmate_fortune(*, user_id: str, profile: dict, image_bytes:
         result.sections[0].text = "İsim enerjisi A, M veya S harflerinde yoğunlaşıyor; bu kesin bir kimlik değil, sembolik bir izdir."
         result.sections[1].title = "Sembolik portre"
         result.sections[1].text = "Bakışları sakin, gece tonlarında ve güçlü sezgi taşıyan bir portre enerjisi öne çıkıyor."
-        return result
+        return _augment_generic_result(result, profile, profile.get("focus") or "Aşk")
 
     if not settings.openai_api_key:
         raise AppError(
@@ -359,7 +363,7 @@ async def generate_soulmate_fortune(*, user_id: str, profile: dict, image_bytes:
         ) from exc
     data["fortune_id"] = data.get("fortune_id") or f"soulmate_{uuid4().hex[:10]}"
     data["type"] = "soulmate"
-    return GenericFortuneResult.model_validate(data)
+    return _augment_generic_result(GenericFortuneResult.model_validate(data), profile, profile.get("focus") or "Genel enerji")
 
 
 
@@ -389,7 +393,7 @@ async def generate_palm_fortune(*, user_id: str, profile: dict, right_image_byte
             FortuneDetailBlock(title="Yakın dönem sinyali", text="Bir mesaj, kısa görüşme ya da ertelenmiş cevap yeniden görünür hale gelebilir; kesin değil ama iletişim enerjisi belirgin."),
         ]
         result.symbols = ["yasam_cizgisi", "kalp_cizgisi", "zihin_cizgisi", "kader_cizgisi", "mesaj"]
-        return result
+        return _augment_generic_result(result, profile, profile.get("focus") or "Genel enerji")
 
     if not settings.openai_api_key:
         raise AppError(
@@ -450,7 +454,7 @@ async def generate_palm_fortune(*, user_id: str, profile: dict, right_image_byte
         ) from exc
     data["fortune_id"] = data.get("fortune_id") or f"palm_{uuid4().hex[:10]}"
     data["type"] = "palm"
-    return GenericFortuneResult.model_validate(data)
+    return _augment_generic_result(GenericFortuneResult.model_validate(data), request.profile, request.focus)
 
 
 def _palm_developer_instructions() -> str:
@@ -471,6 +475,113 @@ def _extract_output_text(response_json: dict) -> str:
         user_message="AI çıktısı boş geldi. Lütfen tekrar dene.",
     )
 
+
+
+
+def _memory_top_symbols(profile: dict) -> list[str]:
+    memory = profile.get("personal_memory") if isinstance(profile, dict) else None
+    if not isinstance(memory, dict):
+        return []
+    return [str(s).strip() for s in (memory.get("top_symbols") or []) if str(s).strip()][:4]
+
+
+def _focus_text(profile: dict, fallback: str = "Genel enerji") -> str:
+    if not isinstance(profile, dict):
+        return fallback
+    return str(profile.get("focus") or profile.get("main_interest") or fallback).strip() or fallback
+
+
+def _symbol_label(symbol: str) -> str:
+    lookup = {
+        "dag": "Dağ",
+        "dağ": "Dağ",
+        "kus": "Kuş",
+        "kuş": "Kuş",
+        "yol": "Yol",
+        "kalp": "Kalp",
+        "anahtar": "Anahtar",
+        "mesaj": "Mesaj",
+        "gunes": "Güneş",
+        "ay": "Ay",
+        "deniz": "Deniz",
+        "goz": "Göz",
+        "göz": "Göz",
+    }
+    clean = str(symbol or "").strip()
+    return lookup.get(clean.lower(), clean.replace("_", " ").title())
+
+
+def _build_follow_ups(focus: str, symbols: list[str]) -> list[FollowUpQuestion]:
+    visible = [_symbol_label(s) for s in symbols[:3] if str(s).strip()]
+    symbol_part = visible[0] if visible else "ana sembol"
+    return [
+        FollowUpQuestion(question=f"{symbol_part} {focus.lower()} konusunda neye işaret ediyor?", mode="symbol_detail"),
+        FollowUpQuestion(question="Yakın zamanda beklediğim haber veya mesaj için ne görünüyor?", mode="near_future"),
+        FollowUpQuestion(question="Bu falda dikkat etmem gereken gizli uyarı ne?", mode="warning"),
+    ]
+
+
+def _build_personal_insights(profile: dict, symbols: list[str], current_type: str) -> list[PersonalInsight]:
+    memory_symbols = _memory_top_symbols(profile)
+    insights: list[PersonalInsight] = []
+    if memory_symbols:
+        names = ", ".join(_symbol_label(s) for s in memory_symbols[:3])
+        insights.append(PersonalInsight(title="Sırra hafızası", text=f"Geçmiş fallarında {names} temaları tekrar etmiş. Bu falda çıkan yeni işaretler aynı hikâyeyi daha kişisel bir yerden bağlıyor."))
+    else:
+        insights.append(PersonalInsight(title="Sırra hafızası", text="Bu fal sembol hafızana işlendi. Zamanla tekrar eden işaretler aşk, para ve kariyer yorumlarında daha kişisel bağlar kuracak."))
+    if symbols:
+        insights.append(PersonalInsight(title="Sembol izi", text=f"Bu yorumda {_symbol_label(symbols[0])} ana işaret olarak öne çıktı; sonraki fallarda bu işaret tekrar ederse uygulama bunu sana özel bir desen olarak gösterecek."))
+    insights.append(PersonalInsight(title="Kişisel döngü", text=f"{current_type} yorumu günlük fal günlüğüne eklendi; kullanıcı isterse gerçekleşti/gerçekleşmedi takibiyle ileride daha net kişisel örüntü görebilir."))
+    return insights[:3]
+
+
+def _build_story_cards(title: str, summary: str, symbols: list[str]) -> list[ShareCard]:
+    main_symbol = _symbol_label(symbols[0]) if symbols else "Sırra"
+    short_summary = summary.strip()[:120] if summary else "Bugünün enerjisi belirginleşiyor."
+    return [
+        ShareCard(title=f"Bugünkü sembolüm: {main_symbol}", message=short_summary, accent="gold"),
+        ShareCard(title="Fal mesajım", message="Bekleyen bir konu görünür hale geliyor; acele değil, işaretleri izleme zamanı.", accent="purple"),
+    ]
+
+
+def _augment_generic_result(result: GenericFortuneResult, profile: dict, focus: str | None = None) -> GenericFortuneResult:
+    clean_focus = focus or _focus_text(profile)
+    symbols = result.symbols or []
+    if not result.follow_up_questions:
+        result.follow_up_questions = _build_follow_ups(clean_focus, symbols)
+    if not result.personal_insights:
+        result.personal_insights = _build_personal_insights(profile or {}, symbols, result.type)
+    if not result.story_cards:
+        result.story_cards = _build_story_cards(result.title, result.summary, symbols)
+    if not result.daily_ritual_prompt:
+        result.daily_ritual_prompt = f"Bugün {clean_focus.lower()} için tek bir küçük işaret seç: mesaj mı, yol mu, sessizlik mi? Akşam bunu fal günlüğünde işaretle."
+    return result
+
+
+def _augment_dream_result(result: DreamFortuneResult, profile: dict) -> DreamFortuneResult:
+    symbols = result.symbols or []
+    if not result.follow_up_questions:
+        result.follow_up_questions = _build_follow_ups(_focus_text(profile, "Rüya"), symbols)
+    if not result.personal_insights:
+        result.personal_insights = _build_personal_insights(profile or {}, symbols, "dream")
+    if not result.story_cards:
+        result.story_cards = _build_story_cards(result.title, result.summary, symbols)
+    if not result.daily_ritual_prompt:
+        result.daily_ritual_prompt = "Rüyadaki en güçlü sembolü gün içinde bir kez not et; aynı sembol kahve veya kart falında tekrar ederse Sırra bunu bağlayacak."
+    return result
+
+
+def _augment_coffee_result(result: CoffeeFortuneResult, profile: dict) -> CoffeeFortuneResult:
+    symbols = [item.symbol for item in result.detected_symbols]
+    if not result.follow_up_questions:
+        result.follow_up_questions = _build_follow_ups(_focus_text(profile), symbols)
+    if not result.personal_insights:
+        result.personal_insights = _build_personal_insights(profile or {}, symbols, "coffee")
+    if not result.story_cards:
+        result.story_cards = _build_story_cards(result.title, result.summary, symbols)
+    if not result.daily_ritual_prompt:
+        result.daily_ritual_prompt = "Bugün fincanda en net gördüğün sembolü aklında tut; gün içinde benzer bir işaret görürsen fal günlüğüne ekle."
+    return result
 
 def _coffee_developer_instructions() -> str:
     return """

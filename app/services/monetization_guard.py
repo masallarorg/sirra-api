@@ -261,7 +261,31 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
             status_code=402,
         )
 
-    return _reserve(transaction)
+    reservation = _reserve(transaction)
+    _log_fortune_access_ledger(db, reservation=reservation, event_type="reserve")
+    return reservation
+
+
+def _log_fortune_access_ledger(db, *, reservation: FortuneReservation, event_type: str) -> None:
+    try:
+        access = reservation.access_state or {}
+        charged = int(access.get("charged_credits") or reservation.cost or 0)
+        if charged <= 0 and reservation.kind != "credits":
+            return
+        payload = {
+            "uid": reservation.user_id,
+            "fortune_type": reservation.fortune_type,
+            "event_type": event_type,
+            "access_kind": reservation.kind,
+            "amount": charged if event_type == "reserve" else -charged,
+            "balance_after": int(access.get("credits") or 0),
+            "daily_date": reservation.date_key,
+            "created_at": datetime.now(UTC),
+            "reason": "fortune_credit_reserve" if event_type == "reserve" else "fortune_credit_refund",
+        }
+        db.collection("credit_ledger").add(payload)
+    except Exception:
+        return
 
 
 async def refund_fortune_access(reservation: FortuneReservation) -> None:
@@ -292,5 +316,8 @@ async def refund_fortune_access(reservation: FortuneReservation) -> None:
         ref.set(patch, merge=True)
         if "credits" in patch:
             user_ref.set({"credits": patch["credits"], "credits_updated_at": now, "updated_at": now}, merge=True)
+            refund_access = dict(reservation.access_state or {})
+            refund_access["credits"] = patch["credits"]
+            _log_fortune_access_ledger(db, reservation=FortuneReservation(user_id=reservation.user_id, fortune_type=reservation.fortune_type, kind=reservation.kind, cost=reservation.cost, date_key=reservation.date_key, access_state=refund_access), event_type="refund")
     except Exception:
         return

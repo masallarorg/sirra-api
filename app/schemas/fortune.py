@@ -54,6 +54,24 @@ class PremiumLock(BaseModel):
     teaser: str
 
 
+
+
+class FollowUpQuestion(BaseModel):
+    question: str
+    mode: str = "chat"
+
+
+class PersonalInsight(BaseModel):
+    title: str
+    text: str
+
+
+class ShareCard(BaseModel):
+    title: str
+    message: str
+    accent: str = "gold"
+
+
 class CrossFortuneConnection(BaseModel):
     message: str
     related_fortune_id: str | None = None
@@ -72,6 +90,10 @@ class CoffeeFortuneResult(BaseModel):
     family: FortuneSection
     cross_fortune_connections: list[CrossFortuneConnection] = Field(default_factory=list)
     premium_locks: list[PremiumLock]
+    follow_up_questions: list[FollowUpQuestion] = Field(default_factory=list)
+    personal_insights: list[PersonalInsight] = Field(default_factory=list)
+    story_cards: list[ShareCard] = Field(default_factory=list)
+    daily_ritual_prompt: str = ""
 
 
 class CoffeeFortuneResponse(BaseModel):
@@ -96,6 +118,10 @@ class DreamFortuneResult(BaseModel):
     interpretation: str
     cross_fortune_connections: list[CrossFortuneConnection] = Field(default_factory=list)
     premium_locks: list[PremiumLock]
+    follow_up_questions: list[FollowUpQuestion] = Field(default_factory=list)
+    personal_insights: list[PersonalInsight] = Field(default_factory=list)
+    story_cards: list[ShareCard] = Field(default_factory=list)
+    daily_ritual_prompt: str = ""
 
 
 class DreamFortuneResponse(BaseModel):
@@ -127,6 +153,10 @@ class GenericFortuneResult(BaseModel):
     symbols: list[str] = Field(default_factory=list)
     cross_fortune_connections: list[CrossFortuneConnection] = Field(default_factory=list)
     premium_locks: list[PremiumLock]
+    follow_up_questions: list[FollowUpQuestion] = Field(default_factory=list)
+    personal_insights: list[PersonalInsight] = Field(default_factory=list)
+    story_cards: list[ShareCard] = Field(default_factory=list)
+    daily_ritual_prompt: str = ""
 
 
 class GenericFortuneResponse(BaseModel):
