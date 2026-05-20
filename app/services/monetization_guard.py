@@ -96,9 +96,14 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
                 "premium_daily_used": 0,
                 "premium_daily_limit": PREMIUM_DAILY_LIMIT,
                 "premium_daily_remaining": PREMIUM_DAILY_LIMIT,
+                "premium_daily_exhausted": False,
                 "standard_free_daily_used": 0,
+                "free_used": 0,
                 "daily_date": _today_key(),
                 "is_premium": False,
+                "user_message": None,
+                "daily_reset_timezone": "Europe/Istanbul",
+                "daily_reset_rule": "Her gün 23:59 Türkiye saatinde yenilenir.",
             },
         )
 
@@ -166,7 +171,17 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
             "last_fortune_type": fortune_type,
         }
 
-        def state(*, access_kind: str, charged_credits: int, credits_after: int, premium_after: int, free_after: int) -> dict[str, Any]:
+        def state(
+            *,
+            access_kind: str,
+            charged_credits: int,
+            credits_after: int,
+            premium_after: int,
+            free_after: int,
+            user_message: str | None = None,
+        ) -> dict[str, Any]:
+            premium_remaining = max(0, PREMIUM_DAILY_LIMIT - premium_after)
+            premium_exhausted = bool(active_premium and premium_remaining == 0)
             return {
                 "credits": credits_after,
                 "charged_credits": charged_credits,
@@ -174,11 +189,15 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
                 "premium_daily_used": premium_after,
                 "premium_used": premium_after,
                 "premium_daily_limit": PREMIUM_DAILY_LIMIT,
-                "premium_daily_remaining": max(0, PREMIUM_DAILY_LIMIT - premium_after),
+                "premium_daily_remaining": premium_remaining,
+                "premium_daily_exhausted": premium_exhausted,
                 "standard_free_daily_used": free_after,
                 "free_used": free_after,
                 "daily_date": today,
                 "is_premium": bool(active_premium),
+                "user_message": user_message,
+                "daily_reset_timezone": "Europe/Istanbul",
+                "daily_reset_rule": "Her gün 23:59 Türkiye saatinde yenilenir.",
             }
 
         if active_premium and premium_used < PREMIUM_DAILY_LIMIT:
@@ -201,15 +220,43 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
 
         if credits >= cost:
             credits_after = credits - cost
-            patch = {**base_patch, "credits": credits_after, "premium_used": premium_used, "premium_daily_used": premium_used, "free_used": free_used, "standard_free_daily_used": free_used, "last_charged_credits": cost}
+            premium_credit_notice = (
+                f"Bugünkü {PREMIUM_DAILY_LIMIT} premium fal hakkın bitti. Bu falda {cost} kredi kullanılıyor."
+                if active_premium and premium_used >= PREMIUM_DAILY_LIMIT
+                else None
+            )
+            patch = {
+                **base_patch,
+                "credits": credits_after,
+                "premium_used": premium_used,
+                "premium_daily_used": premium_used,
+                "premium_daily_exhausted": bool(active_premium and premium_used >= PREMIUM_DAILY_LIMIT),
+                "free_used": free_used,
+                "standard_free_daily_used": free_used,
+                "last_charged_credits": cost,
+                "last_access_kind": "credits",
+                "last_access_message": premium_credit_notice,
+            }
             transaction.set(access_ref, patch, merge=True)
             transaction.set(user_ref, {"credits": credits_after, "credits_updated_at": now, "updated_at": now}, merge=True)
-            access_state = state(access_kind="credits", charged_credits=cost, credits_after=credits_after, premium_after=premium_used, free_after=free_used)
+            access_state = state(
+                access_kind="credits",
+                charged_credits=cost,
+                credits_after=credits_after,
+                premium_after=premium_used,
+                free_after=free_used,
+                user_message=premium_credit_notice,
+            )
             return FortuneReservation(user_id=user_id, fortune_type=fortune_type, kind="credits", cost=cost, date_key=today, access_state=access_state)
 
+        premium_exhausted_prefix = (
+            f"Bugünkü {PREMIUM_DAILY_LIMIT} premium fal hakkın bitti ve bu fal için {cost} kredi gerekiyor. "
+            if active_premium and premium_used >= PREMIUM_DAILY_LIMIT
+            else ""
+        )
         raise AppError(
             error_code="FORTUNE_CREDITS_REQUIRED",
-            user_message=("Premium hesabın başka cihazlarda aktif olduğu için bu cihazda günlük premium hakkı kullanılamadı. " if (not active_premium and premium_device_ok is False) else "") + f"Bu fal için {cost} kredi gerekir. Premiuma geçebilir veya kredi paketiyle devam edebilirsin.",
+            user_message=("Premium hesabın başka cihazlarda aktif olduğu için bu cihazda günlük premium hakkı kullanılamadı. " if (not active_premium and premium_device_ok is False) else premium_exhausted_prefix) + f"Bu fal için {cost} kredi gerekir. Premium hakkın yarın tekrar 5 olacak veya kredi paketiyle devam edebilirsin.",
             developer_message=f"uid={user_id} type={fortune_type} credits={credits} cost={cost}",
             status_code=402,
         )

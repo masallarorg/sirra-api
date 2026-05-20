@@ -6,11 +6,17 @@ class FortuneAccessState(BaseModel):
     charged_credits: int = 0
     access_kind: str = "unknown"
     premium_daily_used: int = 0
+    premium_used: int = 0
     premium_daily_limit: int = 5
     premium_daily_remaining: int = 0
+    premium_daily_exhausted: bool = False
     standard_free_daily_used: int = 0
+    free_used: int = 0
     daily_date: str = ""
     is_premium: bool = False
+    user_message: str | None = None
+    daily_reset_timezone: str = "Europe/Istanbul"
+    daily_reset_rule: str = "Her gün 23:59 Türkiye saatinde yenilenir."
 
 
 

@@ -389,10 +389,14 @@ async def claim_welcome_persona_reward(
             "premium_used": premium_used,
             "premium_daily_limit": 5,
             "premium_daily_remaining": max(0, 5 - premium_used),
+            "premium_daily_exhausted": premium_used >= 5,
             "standard_free_daily_used": free_used,
             "free_used": free_used,
             "daily_date": daily_date,
             "is_premium": True,
+            "user_message": None,
+            "daily_reset_timezone": "Europe/Istanbul",
+            "daily_reset_rule": "Her gün 23:59 Türkiye saatinde yenilenir.",
         }
         return expires_at, credits, access
 
@@ -607,10 +611,14 @@ async def verify_google_play_purchase(
             "premium_used": premium_used,
             "premium_daily_limit": 5,
             "premium_daily_remaining": max(0, 5 - premium_used),
+            "premium_daily_exhausted": premium_used >= 5,
             "standard_free_daily_used": free_used,
             "free_used": free_used,
             "daily_date": daily_date,
             "is_premium": True,
+            "user_message": None,
+            "daily_reset_timezone": "Europe/Istanbul",
+            "daily_reset_rule": "Her gün 23:59 Türkiye saatinde yenilenir.",
             "expires_at": expires_at.isoformat(),
         }
         return GooglePlayVerifyResponse(
