@@ -210,13 +210,8 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
             access_state = state(access_kind="premium_daily", charged_credits=0, credits_after=credits, premium_after=premium_after, free_after=free_used)
             return FortuneReservation(user_id=user_id, fortune_type=fortune_type, kind="premium_daily", cost=0, date_key=today, access_state=access_state)
 
-        if not active_premium and fortune_type == "oracle" and free_used < 1:
-            free_after = free_used + 1
-            patch = {**base_patch, "credits": credits, "premium_used": premium_used, "premium_daily_used": premium_used, "free_used": free_after, "standard_free_daily_used": free_after}
-            transaction.set(access_ref, patch, merge=True)
-            transaction.set(user_ref, {"credits": credits, "credits_updated_at": now, "updated_at": now}, merge=True)
-            access_state = state(access_kind="standard_free", charged_credits=0, credits_after=credits, premium_after=premium_used, free_after=free_after)
-            return FortuneReservation(user_id=user_id, fortune_type=fortune_type, kind="standard_free", cost=0, date_key=today, access_state=access_state)
+        # Standart üyede ücretsiz günlük fal yoktur; standart kullanıcılar
+        # her falı doğrudan kredi bakiyesinden kullanır.
 
         if credits >= cost:
             credits_after = credits - cost
