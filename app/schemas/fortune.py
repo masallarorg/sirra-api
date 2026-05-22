@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -166,3 +168,34 @@ class GenericFortuneResponse(BaseModel):
     status: str
     result: GenericFortuneResult
     access: FortuneAccessState | None = None
+
+
+
+class FortuneFeedbackRequest(BaseModel):
+    status: Literal["realized", "partial", "not_realized", "unknown"] = "unknown"
+    note: str = Field(default="", max_length=500)
+
+
+class FortuneFeedbackResponse(BaseModel):
+    status: str = "saved"
+    fortune_id: str
+    feedback_status: str
+    trust_message: str = "Geri bildirimin yalnızca sana özel Sırra Hafızası'nı iyileştirmek için kullanılır."
+
+
+class SirraCompassResponse(BaseModel):
+    user_id: str
+    summary_title: str
+    trust_message: str
+    daily_symbol: dict = Field(default_factory=dict)
+    daily_message: str
+    desire_signal: dict = Field(default_factory=dict)
+    symbol_memory: list[dict] = Field(default_factory=list)
+    secret_map: list[dict] = Field(default_factory=list)
+    cross_connections: list[dict] = Field(default_factory=list)
+    time_capsules: list[dict] = Field(default_factory=list)
+    probability_map_30d: list[dict] = Field(default_factory=list)
+    feedback_stats: dict = Field(default_factory=dict)
+    daily_loop: list[dict] = Field(default_factory=list)
+    next_best_actions: list[str] = Field(default_factory=list)
+    generated_at: str

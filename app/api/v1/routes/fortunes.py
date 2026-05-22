@@ -7,15 +7,38 @@ from fastapi import APIRouter, Depends, File, Form, UploadFile
 from app.core.config import settings
 from app.core.errors import AppError
 from app.core.security import CurrentUser, require_current_user
-from app.schemas.fortune import CoffeeFortuneResponse, DreamFortuneRequest, DreamFortuneResponse, GenericFortuneRequest, GenericFortuneResponse
+from app.schemas.fortune import CoffeeFortuneResponse, DreamFortuneRequest, DreamFortuneResponse, FortuneFeedbackRequest, FortuneFeedbackResponse, GenericFortuneRequest, GenericFortuneResponse, SirraCompassResponse
 from app.services.openai_fortune import generate_coffee_fortune, generate_dream_fortune, generate_generic_fortune, generate_palm_fortune, generate_soulmate_fortune
 from app.services.monetization_guard import reserve_fortune_access, refund_fortune_access
 from app.services.symbol_linker import find_cross_fortune_connections
 from app.services.image_validation import prepare_openai_image
 from app.services.personal_memory import enrich_profile_with_memory, store_fortune_memory
+from app.services.sirra_compass import build_sirra_compass, record_fortune_feedback
 
 router = APIRouter()
 
+
+
+
+@router.get("/sirra-compass", response_model=SirraCompassResponse)
+async def sirra_compass(current_user: CurrentUser = Depends(require_current_user)) -> SirraCompassResponse:
+    payload = await build_sirra_compass(current_user.uid)
+    return SirraCompassResponse.model_validate(payload)
+
+
+@router.post("/{fortune_id}/feedback", response_model=FortuneFeedbackResponse)
+async def fortune_feedback(
+    fortune_id: str,
+    request: FortuneFeedbackRequest,
+    current_user: CurrentUser = Depends(require_current_user),
+) -> FortuneFeedbackResponse:
+    payload = await record_fortune_feedback(
+        user_id=current_user.uid,
+        fortune_id=fortune_id,
+        status=request.status,
+        note=request.note,
+    )
+    return FortuneFeedbackResponse.model_validate(payload)
 
 @router.post("/generate", response_model=GenericFortuneResponse)
 async def generate_fortune(request: GenericFortuneRequest, current_user: CurrentUser = Depends(require_current_user)) -> GenericFortuneResponse:
