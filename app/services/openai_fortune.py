@@ -209,8 +209,11 @@ async def generate_generic_fortune(request: GenericFortuneRequest) -> GenericFor
             status_code=422,
         )
 
+    profile = request.profile or {}
+    focus = request.focus or profile.get("focus") or "Aşk"
+
     if settings.mock_ai:
-        return _augment_generic_result(_mock_generic_result(type_id=type_id, request=request), request.profile, request.focus)
+        return _augment_generic_result(_mock_generic_result(type_id=type_id, request=request), profile, focus)
 
     if not settings.openai_api_key:
         raise AppError(
@@ -286,7 +289,7 @@ async def generate_generic_fortune(request: GenericFortuneRequest) -> GenericFor
 
     data["fortune_id"] = data.get("fortune_id") or f"{type_id}_{uuid4().hex[:10]}"
     data["type"] = type_id
-    return _augment_generic_result(GenericFortuneResult.model_validate(data), profile, profile.get("focus") or "Aşk")
+    return _augment_generic_result(GenericFortuneResult.model_validate(data), profile, focus)
 
 
 async def generate_soulmate_fortune(*, user_id: str, profile: dict, image_bytes: bytes) -> GenericFortuneResult:
