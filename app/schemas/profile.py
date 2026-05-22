@@ -21,3 +21,4 @@ class UserProfile(BaseModel):
     selfie_persona_tags: list[str] = Field(default_factory=list)
     addressing_preference: str | None = None
     is_premium: bool = False
+    premium_until: str | None = None

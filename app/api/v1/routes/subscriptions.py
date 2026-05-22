@@ -246,16 +246,42 @@ def _subscription_expiry_from_google(data: dict[str, Any], fallback_days: int) -
     return datetime.now(UTC) + timedelta(days=fallback_days)
 
 
+def _parse_expiry(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+    if isinstance(value, (int, float)):
+        raw = int(value)
+        if raw <= 0:
+            return None
+        if raw > 100000000000:
+            return datetime.fromtimestamp(raw / 1000, tz=UTC)
+        return datetime.fromtimestamp(raw, tz=UTC)
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return _parse_expiry(int(text))
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    except Exception:
+        return None
+
+
 def _status_from_data(user_id: str, data: dict[str, Any] | None) -> SubscriptionStatus:
     data = data or {}
-    active = bool(data.get("active") or data.get("entitlement") == "premium")
+    raw_active = bool(data.get("active") or data.get("entitlement") == "premium" or data.get("is_premium"))
+    expires = _parse_expiry(data.get("expires_at") or data.get("premium_until") or data.get("premiumUntil"))
+    active = raw_active and (expires is None or expires > datetime.now(UTC))
     entitlement = "premium" if active else "free"
     return SubscriptionStatus(
         user_id=user_id,
         active=active,
         entitlement=entitlement,
         provider=str(data.get("provider") or "revenuecat"),
-        expires_at=str(data.get("expires_at") or "") or None,
+        expires_at=expires.isoformat() if expires else (str(data.get("expires_at") or "") or None),
     )
 
 
@@ -326,10 +352,10 @@ async def claim_welcome_persona_reward(
         device = device_snap.to_dict() if device_snap.exists else {}
         money = money_snap.to_dict() if money_snap.exists else {}
 
-        if sub.get("welcome_persona_claimed") is True or sub.get("selfie_wheel_claimed") is True:
+        if sub.get("welcome_trial_granted") is True or sub.get("welcome_persona_claimed") is True or sub.get("selfie_wheel_claimed") is True:
             raise AppError(
                 error_code="WELCOME_PERSONA_ALREADY_CLAIMED",
-                user_message="Bu kişisel başlangıç ödülü bu hesapta daha önce kullanıldı.",
+                user_message="Başlangıç premium ödülü bu hesapta daha önce kullanıldı.",
                 developer_message=f"uid={current_user.uid}",
                 status_code=409,
             )
@@ -396,7 +422,7 @@ async def claim_welcome_persona_reward(
             "is_premium": True,
             "user_message": None,
             "daily_reset_timezone": "Europe/Istanbul",
-            "daily_reset_rule": "Her gün 23:59 Türkiye saatinde yenilenir.",
+            "daily_reset_rule": "Her gün 00:01 Türkiye saatinde yenilenir.",
         }
         return expires_at, credits, access
 
@@ -618,7 +644,7 @@ async def verify_google_play_purchase(
             "is_premium": True,
             "user_message": None,
             "daily_reset_timezone": "Europe/Istanbul",
-            "daily_reset_rule": "Her gün 23:59 Türkiye saatinde yenilenir.",
+            "daily_reset_rule": "Her gün 00:01 Türkiye saatinde yenilenir.",
             "expires_at": expires_at.isoformat(),
         }
         return GooglePlayVerifyResponse(

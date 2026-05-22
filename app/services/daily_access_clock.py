@@ -4,24 +4,23 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 ACCESS_TIMEZONE = ZoneInfo("Europe/Istanbul")
-DAILY_RESET_HOUR = 23
-DAILY_RESET_MINUTE = 59
+DAILY_RESET_HOUR = 0
+DAILY_RESET_MINUTE = 1
 
 
 def daily_access_key(now: datetime | None = None) -> str:
     """Return the entitlement day key used for daily limits.
 
-    Premium users must have a fresh 5-right allowance every day at 23:59
-    Turkey time.  We intentionally roll the key to the next calendar day once
-    local time reaches 23:59, so a user with 2/5 remaining immediately sees
-    a full 5/5 allowance at that time.
+    Premium users receive a fresh 5-right allowance every day at 00:01
+    Turkey time. Between 00:00:00 and 00:00:59 we still use the previous
+    calendar day, so the visible reset happens at exactly 00:01.
     """
     current = now or datetime.now(ACCESS_TIMEZONE)
     if current.tzinfo is None:
         current = current.replace(tzinfo=ACCESS_TIMEZONE)
     local = current.astimezone(ACCESS_TIMEZONE)
-    if (local.hour, local.minute) >= (DAILY_RESET_HOUR, DAILY_RESET_MINUTE):
-        local = local + timedelta(days=1)
+    if (local.hour, local.minute) < (DAILY_RESET_HOUR, DAILY_RESET_MINUTE):
+        local = local - timedelta(days=1)
     return local.date().isoformat()
 
 

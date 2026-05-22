@@ -56,22 +56,37 @@ def _firestore_client():
     return firestore.client()
 
 
+def _parse_expiry(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+    if isinstance(value, (int, float)):
+        raw = int(value)
+        if raw <= 0:
+            return None
+        if raw > 100000000000:
+            return datetime.fromtimestamp(raw / 1000, tz=UTC)
+        return datetime.fromtimestamp(raw, tz=UTC)
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return _parse_expiry(int(text))
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    except Exception:
+        return None
+
+
 def _is_subscription_active(data: dict[str, Any] | None) -> bool:
     data = data or {}
-    if bool(data.get("active")) or data.get("entitlement") == "premium":
-        expires_at = str(data.get("expires_at") or "").strip()
-        if not expires_at:
+    if bool(data.get("active")) or data.get("entitlement") == "premium" or bool(data.get("is_premium")):
+        expires_at = _parse_expiry(data.get("expires_at") or data.get("premium_until") or data.get("premiumUntil"))
+        if expires_at is None:
             return True
-        if expires_at.isdigit():
-            try:
-                return datetime.fromtimestamp(int(expires_at) / 1000, tz=UTC) > datetime.now(UTC)
-            except Exception:
-                return True
-        try:
-            parsed = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-            return parsed > datetime.now(UTC)
-        except Exception:
-            return True
+        return expires_at > datetime.now(UTC)
     return False
 
 
@@ -103,7 +118,7 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
                 "is_premium": False,
                 "user_message": None,
                 "daily_reset_timezone": "Europe/Istanbul",
-                "daily_reset_rule": "Her gün 23:59 Türkiye saatinde yenilenir.",
+                "daily_reset_rule": "Her gün 00:01 Türkiye saatinde yenilenir.",
             },
         )
 
@@ -197,7 +212,7 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
                 "is_premium": bool(active_premium),
                 "user_message": user_message,
                 "daily_reset_timezone": "Europe/Istanbul",
-                "daily_reset_rule": "Her gün 23:59 Türkiye saatinde yenilenir.",
+                "daily_reset_rule": "Her gün 00:01 Türkiye saatinde yenilenir.",
             }
 
         if active_premium and premium_used < PREMIUM_DAILY_LIMIT:
