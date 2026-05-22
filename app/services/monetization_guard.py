@@ -117,6 +117,8 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
                 "daily_date": _today_key(),
                 "is_premium": False,
                 "user_message": None,
+                "authoritative_daily_state": True,
+                "daily_reset_applied": False,
                 "daily_reset_timezone": "Europe/Istanbul",
                 "daily_reset_rule": "Her gün 00:01 Türkiye saatinde yenilenir.",
             },
@@ -173,7 +175,8 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
         daily_date = str(data.get("daily_date") or user_data.get("daily_date") or "")
         premium_used = max(int(data.get("premium_used") or 0), int(data.get("premium_daily_used") or 0), int(user_data.get("premium_used") or 0), int(user_data.get("premium_daily_used") or 0))
         free_used = max(int(data.get("free_used") or 0), int(data.get("standard_free_daily_used") or 0), int(user_data.get("free_used") or 0), int(user_data.get("standard_free_daily_used") or 0))
-        if daily_date != today:
+        daily_reset_applied = daily_date != today
+        if daily_reset_applied:
             premium_used = 0
             free_used = 0
 
@@ -184,6 +187,8 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
             "updated_at": now,
             "credits_updated_at": now,
             "last_fortune_type": fortune_type,
+            "daily_reset_applied": daily_reset_applied,
+            "authoritative_daily_state": True,
         }
 
         def state(
@@ -211,18 +216,46 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
                 "daily_date": today,
                 "is_premium": bool(active_premium),
                 "user_message": user_message,
+                "authoritative_daily_state": True,
+                "daily_reset_applied": daily_reset_applied,
                 "daily_reset_timezone": "Europe/Istanbul",
                 "daily_reset_rule": "Her gün 00:01 Türkiye saatinde yenilenir.",
             }
 
         if active_premium and premium_used < PREMIUM_DAILY_LIMIT:
             premium_after = premium_used + 1
-            patch = {**base_patch, "credits": credits, "premium_used": premium_after, "premium_daily_used": premium_after, "free_used": free_used, "standard_free_daily_used": free_used}
+            access_state = state(access_kind="premium_daily", charged_credits=0, credits_after=credits, premium_after=premium_after, free_after=free_used)
+            patch = {
+                **base_patch,
+                "credits": credits,
+                "premium_used": premium_after,
+                "premium_daily_used": premium_after,
+                "premium_daily_limit": PREMIUM_DAILY_LIMIT,
+                "premium_daily_remaining": access_state["premium_daily_remaining"],
+                "premium_daily_exhausted": access_state["premium_daily_exhausted"],
+                "free_used": free_used,
+                "standard_free_daily_used": free_used,
+                "last_access_kind": "premium_daily",
+                "last_charged_credits": 0,
+                "last_access_message": None,
+            }
             transaction.set(access_ref, patch, merge=True)
-            transaction.set(user_ref, {"credits": credits, "credits_updated_at": now, "updated_at": now}, merge=True)
+            transaction.set(user_ref, {
+                "credits": credits,
+                "credits_updated_at": now,
+                "daily_date": today,
+                "premium_used": premium_after,
+                "premium_daily_used": premium_after,
+                "premium_daily_limit": PREMIUM_DAILY_LIMIT,
+                "premium_daily_remaining": access_state["premium_daily_remaining"],
+                "premium_daily_exhausted": access_state["premium_daily_exhausted"],
+                "last_access_kind": "premium_daily",
+                "authoritative_daily_state": True,
+                "daily_reset_applied": daily_reset_applied,
+                "updated_at": now,
+            }, merge=True)
             if active_devices_patch is not None:
                 transaction.set(sub_ref, {"active_devices": active_devices_patch, "updated_at": now}, merge=True)
-            access_state = state(access_kind="premium_daily", charged_credits=0, credits_after=credits, premium_after=premium_after, free_after=free_used)
             return FortuneReservation(user_id=user_id, fortune_type=fortune_type, kind="premium_daily", cost=0, date_key=today, access_state=access_state)
 
         # Standart üyede ücretsiz günlük fal yoktur; standart kullanıcılar
@@ -235,20 +268,6 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
                 if active_premium and premium_used >= PREMIUM_DAILY_LIMIT
                 else None
             )
-            patch = {
-                **base_patch,
-                "credits": credits_after,
-                "premium_used": premium_used,
-                "premium_daily_used": premium_used,
-                "premium_daily_exhausted": bool(active_premium and premium_used >= PREMIUM_DAILY_LIMIT),
-                "free_used": free_used,
-                "standard_free_daily_used": free_used,
-                "last_charged_credits": cost,
-                "last_access_kind": "credits",
-                "last_access_message": premium_credit_notice,
-            }
-            transaction.set(access_ref, patch, merge=True)
-            transaction.set(user_ref, {"credits": credits_after, "credits_updated_at": now, "updated_at": now}, merge=True)
             access_state = state(
                 access_kind="credits",
                 charged_credits=cost,
@@ -257,6 +276,35 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
                 free_after=free_used,
                 user_message=premium_credit_notice,
             )
+            patch = {
+                **base_patch,
+                "credits": credits_after,
+                "premium_used": premium_used,
+                "premium_daily_used": premium_used,
+                "premium_daily_limit": PREMIUM_DAILY_LIMIT,
+                "premium_daily_remaining": access_state["premium_daily_remaining"],
+                "premium_daily_exhausted": access_state["premium_daily_exhausted"],
+                "free_used": free_used,
+                "standard_free_daily_used": free_used,
+                "last_charged_credits": cost,
+                "last_access_kind": "credits",
+                "last_access_message": premium_credit_notice,
+            }
+            transaction.set(access_ref, patch, merge=True)
+            transaction.set(user_ref, {
+                "credits": credits_after,
+                "credits_updated_at": now,
+                "daily_date": today,
+                "premium_used": premium_used,
+                "premium_daily_used": premium_used,
+                "premium_daily_limit": PREMIUM_DAILY_LIMIT,
+                "premium_daily_remaining": access_state["premium_daily_remaining"],
+                "premium_daily_exhausted": access_state["premium_daily_exhausted"],
+                "last_access_kind": "credits",
+                "authoritative_daily_state": True,
+                "daily_reset_applied": daily_reset_applied,
+                "updated_at": now,
+            }, merge=True)
             return FortuneReservation(user_id=user_id, fortune_type=fortune_type, kind="credits", cost=cost, date_key=today, access_state=access_state)
 
         premium_exhausted_prefix = (
@@ -314,18 +362,35 @@ async def refund_fortune_access(reservation: FortuneReservation) -> None:
         free_used = max(int(data.get("free_used") or 0), int(data.get("standard_free_daily_used") or 0), int(user_data.get("free_used") or 0), int(user_data.get("standard_free_daily_used") or 0))
         now = datetime.now(UTC)
         patch: dict[str, Any] = {"updated_at": now}
+        patch["authoritative_daily_state"] = True
+        patch["last_access_kind"] = f"refund_{reservation.kind}"
         if reservation.kind == "credits":
             patch["credits"] = credits + reservation.cost
             patch["credits_updated_at"] = now
         elif reservation.kind == "premium_daily":
             patch["premium_used"] = max(0, premium_used - 1)
             patch["premium_daily_used"] = patch["premium_used"]
+            patch["premium_daily_limit"] = PREMIUM_DAILY_LIMIT
+            patch["premium_daily_remaining"] = max(0, PREMIUM_DAILY_LIMIT - patch["premium_used"])
+            patch["premium_daily_exhausted"] = patch["premium_used"] >= PREMIUM_DAILY_LIMIT
         elif reservation.kind == "standard_free":
             patch["free_used"] = max(0, free_used - 1)
             patch["standard_free_daily_used"] = patch["free_used"]
         ref.set(patch, merge=True)
+        user_patch = {"updated_at": now, "authoritative_daily_state": True, "last_access_kind": patch["last_access_kind"]}
         if "credits" in patch:
-            user_ref.set({"credits": patch["credits"], "credits_updated_at": now, "updated_at": now}, merge=True)
+            user_patch.update({"credits": patch["credits"], "credits_updated_at": now})
+        if "premium_daily_used" in patch:
+            user_patch.update({
+                "premium_used": patch["premium_used"],
+                "premium_daily_used": patch["premium_daily_used"],
+                "premium_daily_limit": PREMIUM_DAILY_LIMIT,
+                "premium_daily_remaining": patch["premium_daily_remaining"],
+                "premium_daily_exhausted": patch["premium_daily_exhausted"],
+            })
+        if len(user_patch) > 3:
+            user_ref.set(user_patch, merge=True)
+        if "credits" in patch:
             refund_access = dict(reservation.access_state or {})
             refund_access["credits"] = patch["credits"]
             _log_fortune_access_ledger(db, reservation=FortuneReservation(user_id=reservation.user_id, fortune_type=reservation.fortune_type, kind=reservation.kind, cost=reservation.cost, date_key=reservation.date_key, access_state=refund_access), event_type="refund")

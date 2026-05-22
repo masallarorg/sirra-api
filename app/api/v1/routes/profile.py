@@ -137,7 +137,8 @@ def _ensure_welcome_entitlement(db, user_id: str) -> dict[str, Any]:
     daily_date = str((money_data or {}).get("daily_date") or today)
     premium_used = max(int((money_data or {}).get("premium_used") or 0), int((money_data or {}).get("premium_daily_used") or 0))
     free_used = max(int((money_data or {}).get("free_used") or 0), int((money_data or {}).get("standard_free_daily_used") or 0))
-    if daily_date != today:
+    daily_reset_applied = daily_date != today
+    if daily_reset_applied:
         daily_date = today
         premium_used = 0
         free_used = 0
@@ -153,6 +154,9 @@ def _ensure_welcome_entitlement(db, user_id: str) -> dict[str, Any]:
         "premium_daily_remaining": max(0, PREMIUM_DAILY_LIMIT - premium_used),
         "free_used": free_used,
         "standard_free_daily_used": free_used,
+        "last_access_kind": "welcome_registration",
+        "authoritative_daily_state": True,
+        "daily_reset_applied": daily_reset_applied,
         "credits_updated_at": now,
         "updated_at": now,
     }
@@ -185,6 +189,15 @@ def _ensure_welcome_entitlement(db, user_id: str) -> dict[str, Any]:
         "welcome_trial_granted": True,
         "is_premium": bool(is_premium),
         "premium_until": expires_at if expires_at else None,
+        "daily_date": daily_date,
+        "premium_used": premium_used,
+        "premium_daily_used": premium_used,
+        "premium_daily_limit": PREMIUM_DAILY_LIMIT,
+        "premium_daily_remaining": max(0, PREMIUM_DAILY_LIMIT - premium_used),
+        "premium_daily_exhausted": premium_used >= PREMIUM_DAILY_LIMIT,
+        "last_access_kind": "welcome_registration",
+        "authoritative_daily_state": True,
+        "daily_reset_applied": daily_reset_applied,
         "credits_updated_at": now,
         "updated_at": now,
     }, merge=True)
@@ -204,6 +217,8 @@ def _ensure_welcome_entitlement(db, user_id: str) -> dict[str, Any]:
         "is_premium": bool(is_premium),
         "expires_at": expires_at.isoformat() if expires_at else None,
         "user_message": None,
+        "authoritative_daily_state": True,
+        "daily_reset_applied": daily_reset_applied,
         "daily_reset_timezone": "Europe/Istanbul",
         "daily_reset_rule": "Her gün 00:01 Türkiye saatinde yenilenir.",
     }

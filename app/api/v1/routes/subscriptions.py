@@ -397,16 +397,24 @@ async def claim_welcome_persona_reward(
             "claimed_at": now,
             "claim_type": "welcome_trial",
         }, merge=True)
-        transaction.set(monetization_ref, {
+        daily_remaining = max(0, 5 - premium_used)
+        daily_payload = {
             "credits": credits,
             "daily_date": daily_date,
             "premium_used": premium_used,
             "premium_daily_used": premium_used,
+            "premium_daily_limit": 5,
+            "premium_daily_remaining": daily_remaining,
+            "premium_daily_exhausted": premium_used >= 5,
             "free_used": free_used,
             "standard_free_daily_used": free_used,
+            "last_access_kind": "welcome_trial",
+            "authoritative_daily_state": True,
+            "daily_reset_applied": False,
             "updated_at": now,
-        }, merge=True)
-        transaction.set(user_ref, {"is_premium": True, "updated_at": now}, merge=True)
+        }
+        transaction.set(monetization_ref, daily_payload, merge=True)
+        transaction.set(user_ref, {**daily_payload, "is_premium": True, "premium_until": expires_at.isoformat(), "updated_at": now}, merge=True)
         access = {
             "credits": credits,
             "charged_credits": 0,
@@ -414,13 +422,15 @@ async def claim_welcome_persona_reward(
             "premium_daily_used": premium_used,
             "premium_used": premium_used,
             "premium_daily_limit": 5,
-            "premium_daily_remaining": max(0, 5 - premium_used),
+            "premium_daily_remaining": daily_remaining,
             "premium_daily_exhausted": premium_used >= 5,
             "standard_free_daily_used": free_used,
             "free_used": free_used,
             "daily_date": daily_date,
             "is_premium": True,
             "user_message": None,
+            "authoritative_daily_state": True,
+            "daily_reset_applied": False,
             "daily_reset_timezone": "Europe/Istanbul",
             "daily_reset_rule": "Her gün 00:01 Türkiye saatinde yenilenir.",
         }
@@ -617,32 +627,52 @@ async def verify_google_play_purchase(
             "expires_at": expires_at.isoformat(),
             "updated_at": now,
         }, merge=True)
-        user_ref.set({"is_premium": True, "updated_at": now}, merge=True)
         money_snap = money_ref.get()
         money = money_snap.to_dict() if money_snap.exists else {}
         today = daily_access_key()
         daily_date = str((money or {}).get("daily_date") or today)
         premium_used = max(int((money or {}).get("premium_used") or 0), int((money or {}).get("premium_daily_used") or 0))
         free_used = max(int((money or {}).get("free_used") or 0), int((money or {}).get("standard_free_daily_used") or 0))
-        if daily_date != today:
+        daily_reset_applied = daily_date != today
+        if daily_reset_applied:
             premium_used = 0
             free_used = 0
             daily_date = today
-            money_ref.set({"daily_date": today, "premium_used": 0, "premium_daily_used": 0, "free_used": 0, "standard_free_daily_used": 0, "updated_at": now}, merge=True)
+        credits = int((money or {}).get("credits") or 0)
+        daily_remaining = max(0, 5 - premium_used)
+        daily_payload = {
+            "credits": credits,
+            "daily_date": daily_date,
+            "premium_used": premium_used,
+            "premium_daily_used": premium_used,
+            "premium_daily_limit": 5,
+            "premium_daily_remaining": daily_remaining,
+            "premium_daily_exhausted": premium_used >= 5,
+            "free_used": free_used,
+            "standard_free_daily_used": free_used,
+            "last_access_kind": "premium_purchase",
+            "authoritative_daily_state": True,
+            "daily_reset_applied": daily_reset_applied,
+            "updated_at": now,
+        }
+        money_ref.set(daily_payload, merge=True)
+        user_ref.set({**daily_payload, "is_premium": True, "premium_until": expires_at.isoformat(), "updated_at": now}, merge=True)
         access = {
-            "credits": int((money or {}).get("credits") or 0),
+            "credits": credits,
             "charged_credits": 0,
             "access_kind": "premium_purchase",
             "premium_daily_used": premium_used,
             "premium_used": premium_used,
             "premium_daily_limit": 5,
-            "premium_daily_remaining": max(0, 5 - premium_used),
+            "premium_daily_remaining": daily_remaining,
             "premium_daily_exhausted": premium_used >= 5,
             "standard_free_daily_used": free_used,
             "free_used": free_used,
             "daily_date": daily_date,
             "is_premium": True,
             "user_message": None,
+            "authoritative_daily_state": True,
+            "daily_reset_applied": daily_reset_applied,
             "daily_reset_timezone": "Europe/Istanbul",
             "daily_reset_rule": "Her gün 00:01 Türkiye saatinde yenilenir.",
             "expires_at": expires_at.isoformat(),

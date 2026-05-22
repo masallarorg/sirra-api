@@ -15,6 +15,8 @@ class FortuneAccessState(BaseModel):
     daily_date: str = ""
     is_premium: bool = False
     user_message: str | None = None
+    authoritative_daily_state: bool = True
+    daily_reset_applied: bool = False
     daily_reset_timezone: str = "Europe/Istanbul"
     daily_reset_rule: str = "Her gün 00:01 Türkiye saatinde yenilenir."
 
