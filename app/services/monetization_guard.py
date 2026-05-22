@@ -90,6 +90,91 @@ def _is_subscription_active(data: dict[str, Any] | None) -> bool:
     return False
 
 
+def _snapshot_update_time(snapshot: Any) -> datetime | None:
+    value = getattr(snapshot, "update_time", None)
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+    try:
+        # google.cloud.firestore_v1._helpers.TimestampWithNanoseconds exposes
+        # timestamp()/ToDatetime()-like behavior depending on SDK version.
+        if hasattr(value, "timestamp"):
+            return datetime.fromtimestamp(value.timestamp(), tz=UTC)
+        if hasattr(value, "ToDatetime"):
+            parsed = value.ToDatetime()
+            return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    except Exception:
+        return None
+    return None
+
+
+def _credit_version(data: dict[str, Any], snapshot: Any | None = None) -> datetime | None:
+    # credits_updated_at is set by backend/client sync. Firestore update_time is
+    # critical for Firebase Console edits where an admin only changes `credits`
+    # and does not manually touch credits_updated_at.
+    explicit = _parse_expiry(data.get("credits_updated_at") or data.get("updated_at"))
+    return explicit or (_snapshot_update_time(snapshot) if snapshot is not None else None)
+
+
+def _credit_candidate(data: dict[str, Any] | None, snapshot: Any | None = None) -> tuple[int, datetime | None] | None:
+    data = data or {}
+    if "credits" not in data:
+        return None
+    try:
+        credits = int(data.get("credits") or 0)
+    except Exception:
+        return None
+    return max(0, credits), _credit_version(data, snapshot)
+
+
+def latest_credit_balance(
+    monetization_data: dict[str, Any] | None,
+    user_data: dict[str, Any] | None,
+    *,
+    monetization_snapshot: Any | None = None,
+    user_snapshot: Any | None = None,
+    default: int = WELCOME_CREDITS,
+) -> int:
+    """Pick the authoritative credit balance from mirrored Firestore docs.
+
+    The old implementation used ``max(monetization.credits, users.credits)`` to
+    protect rewarded-ad credits from stale lower mirrors. That made Firebase
+    Console/admin decreases impossible: lowering 20 -> 5 was immediately ignored
+    because the other mirror still had 20. We now choose the newest credit field
+    by credits_updated_at/updated_at, and fall back to Firestore document
+    update_time for manual console edits. If versions are equal or unknown, the
+    higher value still wins as the safe fallback.
+    """
+    candidates = [
+        item
+        for item in (
+            _credit_candidate(monetization_data, monetization_snapshot),
+            _credit_candidate(user_data, user_snapshot),
+        )
+        if item is not None
+    ]
+    if not candidates:
+        return max(0, int(default))
+    if len(candidates) == 1:
+        return candidates[0][0]
+
+    dated = [item for item in candidates if item[1] is not None]
+    if len(dated) == len(candidates):
+        dated.sort(key=lambda item: item[1] or datetime.min.replace(tzinfo=UTC), reverse=True)
+        newest_time = dated[0][1]
+        newest = [item for item in dated if item[1] == newest_time]
+        if len(newest) == 1:
+            return newest[0][0]
+        return max(item[0] for item in newest)
+
+    # Missing versions mean we cannot prove which mirror is newer. Prefer the
+    # larger balance so a stale mirror cannot accidentally erase paid/rewarded
+    # credits; runtime admin decreases are handled by document update_time when
+    # the backend reads Firestore snapshots.
+    return max(item[0] for item in candidates)
+
+
 async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: str | None = None) -> FortuneReservation:
     """Atomically reserve a fortune right before an AI call.
 
@@ -165,13 +250,16 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
         user_data = user or {}
         if not data:
             data = {"credits": WELCOME_CREDITS, "welcome_credits_granted": True}
-        monetization_credits = int(data.get("credits") or 0)
-        user_credits = int(user_data.get("credits") or 0)
-        # Credits were historically mirrored in both monetization/{uid} and users/{uid}.
-        # The backend must never charge from a stale lower document, otherwise login/logout
-        # can appear to erase rewarded-ad credits. Use the highest known balance before spending
-        # and mirror the result back to both documents.
-        credits = max(monetization_credits, user_credits)
+        # Credits are mirrored in monetization/{uid} and users/{uid}. The
+        # authoritative balance is the newest credit field, not the largest one:
+        # otherwise Firebase Console/admin decreases are ignored forever.
+        credits = latest_credit_balance(
+            data,
+            user_data,
+            monetization_snapshot=access_snap,
+            user_snapshot=user_snap,
+            default=WELCOME_CREDITS,
+        )
         daily_date = str(data.get("daily_date") or user_data.get("daily_date") or "")
         premium_used = max(int(data.get("premium_used") or 0), int(data.get("premium_daily_used") or 0), int(user_data.get("premium_used") or 0), int(user_data.get("premium_daily_used") or 0))
         free_used = max(int(data.get("free_used") or 0), int(data.get("standard_free_daily_used") or 0), int(user_data.get("free_used") or 0), int(user_data.get("standard_free_daily_used") or 0))
@@ -357,7 +445,7 @@ async def refund_fortune_access(reservation: FortuneReservation) -> None:
         user_snap = user_ref.get()
         data = snap.to_dict() if snap.exists else {}
         user_data = user_snap.to_dict() if user_snap.exists else {}
-        credits = max(int(data.get("credits") or 0), int(user_data.get("credits") or 0))
+        credits = latest_credit_balance(data, user_data, monetization_snapshot=snap, user_snapshot=user_snap, default=0)
         premium_used = max(int(data.get("premium_used") or 0), int(data.get("premium_daily_used") or 0), int(user_data.get("premium_used") or 0), int(user_data.get("premium_daily_used") or 0))
         free_used = max(int(data.get("free_used") or 0), int(data.get("standard_free_daily_used") or 0), int(user_data.get("free_used") or 0), int(user_data.get("standard_free_daily_used") or 0))
         now = datetime.now(UTC)
