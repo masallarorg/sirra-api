@@ -15,6 +15,13 @@ from app.core.security import CurrentUser, require_current_user
 from app.schemas.subscription import SubscriptionStatus
 from app.services.security_guard import device_hash, require_device_hash
 from app.services.daily_access_clock import daily_access_key
+from app.services.monetization_guard import (
+    PREMIUM_DAILY_LIMIT,
+    WELCOME_CREDITS,
+    _is_subscription_active,
+    _subscription_expires_at,
+    latest_credit_balance,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -272,17 +279,136 @@ def _parse_expiry(value: Any) -> datetime | None:
 
 def _status_from_data(user_id: str, data: dict[str, Any] | None) -> SubscriptionStatus:
     data = data or {}
-    raw_active = bool(data.get("active") or data.get("entitlement") == "premium" or data.get("is_premium"))
-    expires = _parse_expiry(data.get("expires_at") or data.get("premium_until") or data.get("premiumUntil"))
-    active = raw_active and (expires is None or expires > datetime.now(UTC))
+    active = _is_subscription_active(data)
+    expires = _subscription_expires_at(data)
     entitlement = "premium" if active else "free"
     return SubscriptionStatus(
         user_id=user_id,
         active=active,
         entitlement=entitlement,
         provider=str(data.get("provider") or "revenuecat"),
-        expires_at=expires.isoformat() if expires else (str(data.get("expires_at") or "") or None),
+        expires_at=expires.isoformat() if expires else None,
     )
+
+
+def _clamped_counter(*values: Any, maximum: int = 100000) -> int:
+    parsed: list[int] = []
+    for value in values:
+        try:
+            parsed.append(max(0, int(value or 0)))
+        except Exception:
+            pass
+    return min(max(parsed) if parsed else 0, maximum)
+
+
+def _reconcile_premium_access_state(db, user_id: str, *, access_kind: str = "subscription_access_state") -> dict[str, Any]:
+    """Server-owned daily entitlement reconciliation.
+
+    Calling this on app start/status fixes two production problems:
+    * premium days are derived from the real subscription expiry, not a client flag;
+    * premium daily rights reset to 5 at the Turkey-time day boundary even if the
+      user has not started a fortune yet.
+    """
+    sub_ref = db.collection("subscriptions").document(user_id)
+    money_ref = db.collection("monetization").document(user_id)
+    user_ref = db.collection("users").document(user_id)
+
+    sub_snap = sub_ref.get()
+    money_snap = money_ref.get()
+    user_snap = user_ref.get()
+    sub = sub_snap.to_dict() if sub_snap.exists else {}
+    money = money_snap.to_dict() if money_snap.exists else {}
+    user_data = user_snap.to_dict() if user_snap.exists else {}
+
+    active = _is_subscription_active(sub)
+    expires_at = _subscription_expires_at(sub) if active else None
+    today = daily_access_key()
+    now = datetime.now(UTC)
+
+    credits = latest_credit_balance(
+        money,
+        user_data,
+        monetization_snapshot=money_snap,
+        user_snapshot=user_snap,
+        default=WELCOME_CREDITS,
+    )
+    daily_date = str((money or {}).get("daily_date") or (user_data or {}).get("daily_date") or "")
+    premium_used = _clamped_counter(
+        (money or {}).get("premium_used"),
+        (money or {}).get("premium_daily_used"),
+        (user_data or {}).get("premium_used"),
+        (user_data or {}).get("premium_daily_used"),
+        maximum=PREMIUM_DAILY_LIMIT,
+    )
+    free_used = _clamped_counter(
+        (money or {}).get("free_used"),
+        (money or {}).get("standard_free_daily_used"),
+        (user_data or {}).get("free_used"),
+        (user_data or {}).get("standard_free_daily_used"),
+    )
+    daily_reset_applied = daily_date != today
+    if daily_reset_applied:
+        premium_used = 0
+        free_used = 0
+        daily_date = today
+
+    premium_remaining = max(0, PREMIUM_DAILY_LIMIT - premium_used) if active else 0
+    premium_exhausted = bool(active and premium_remaining == 0)
+    access = {
+        "credits": credits,
+        "charged_credits": 0,
+        "access_kind": access_kind,
+        "premium_daily_used": premium_used,
+        "premium_used": premium_used,
+        "premium_daily_limit": PREMIUM_DAILY_LIMIT,
+        "premium_daily_remaining": premium_remaining,
+        "premium_daily_exhausted": premium_exhausted,
+        "standard_free_daily_used": free_used,
+        "free_used": free_used,
+        "daily_date": daily_date,
+        "is_premium": bool(active),
+        "expires_at": expires_at.isoformat() if expires_at else None,
+        "premium_until": expires_at.isoformat() if expires_at else None,
+        "user_message": None,
+        "authoritative_daily_state": True,
+        "force_daily_decrease": daily_reset_applied,
+        "daily_reset_applied": daily_reset_applied,
+        "daily_reset_timezone": "Europe/Istanbul",
+        "daily_reset_rule": "Her gün 00:01 Türkiye saatinde yenilenir.",
+        "updated_at": now.isoformat(),
+    }
+
+    daily_payload = {
+        "credits": credits,
+        "credits_updated_at": now,
+        "daily_date": daily_date,
+        "premium_used": premium_used,
+        "premium_daily_used": premium_used,
+        "premium_daily_limit": PREMIUM_DAILY_LIMIT,
+        "premium_daily_remaining": premium_remaining,
+        "premium_daily_exhausted": premium_exhausted,
+        "free_used": free_used,
+        "standard_free_daily_used": free_used,
+        "last_access_kind": access_kind,
+        "authoritative_daily_state": True,
+        "force_daily_decrease": daily_reset_applied,
+        "daily_reset_applied": daily_reset_applied,
+        "updated_at": now,
+    }
+    money_ref.set(daily_payload, merge=True)
+    user_ref.set(
+        {
+            **daily_payload,
+            "is_premium": bool(active),
+            "premium_until": expires_at if expires_at else None,
+            "premiumUntil": expires_at if expires_at else None,
+            "subscription_checked_at": now,
+        },
+        merge=True,
+    )
+    if sub and not active and (sub.get("active") is True or sub.get("entitlement") == "premium"):
+        sub_ref.set({"active": False, "entitlement": "free", "expired_checked_at": now, "updated_at": now}, merge=True)
+    return access
 
 
 @router.get("/products")
@@ -755,8 +881,15 @@ async def verify_google_play_purchase(
 @router.get("/status", response_model=SubscriptionStatus)
 async def subscription_status(current_user: CurrentUser = Depends(require_current_user)) -> SubscriptionStatus:
     db = _firestore_client()
+    _reconcile_premium_access_state(db, current_user.uid, access_kind="subscription_status")
     snapshot = db.collection("subscriptions").document(current_user.uid).get()
     return _status_from_data(current_user.uid, snapshot.to_dict() if snapshot.exists else None)
+
+
+@router.get("/access-state")
+async def subscription_access_state(current_user: CurrentUser = Depends(require_current_user)) -> dict[str, Any]:
+    db = _firestore_client()
+    return _reconcile_premium_access_state(db, current_user.uid, access_kind="subscription_access_state")
 
 
 @router.post("/credits/sync", response_model=CreditBalanceSyncResponse)
@@ -808,6 +941,21 @@ async def sync_credit_balance(
     )
 
 
+def _revenuecat_expiry_from_event(event: dict[str, Any], product_id: str, now: datetime) -> datetime | None:
+    explicit = _parse_expiry(
+        event.get("expiration_at_ms")
+        or event.get("expiration_at")
+        or event.get("expires_at")
+        or event.get("expiresAt")
+    )
+    if explicit is not None:
+        return explicit
+    purchased_at = _parse_expiry(event.get("purchased_at_ms") or event.get("purchased_at") or event.get("purchasedAt")) or now
+    days = PREMIUM_PRODUCT_DURATIONS.get(product_id)
+    if days is None:
+        return None
+    return purchased_at + timedelta(days=days)
+
 @router.post("/webhook/revenuecat")
 async def revenuecat_webhook(payload: dict, x_webhook_secret: str | None = Header(default=None)) -> dict:
     if settings.revenuecat_webhook_secret and x_webhook_secret != settings.revenuecat_webhook_secret:
@@ -831,10 +979,10 @@ async def revenuecat_webhook(payload: dict, x_webhook_secret: str | None = Heade
     event_type = str(event.get("type") or "").upper()
     active = event_type not in {"CANCELLATION", "EXPIRATION", "BILLING_ISSUE"}
     product_id = str(event.get("product_id") or event.get("entitlement_id") or "premium")
-    expires_at = event.get("expiration_at_ms") or event.get("purchased_at_ms")
 
     db = _firestore_client()
     now = datetime.now(UTC)
+    expires_at = _revenuecat_expiry_from_event(event, product_id, now)
     credit_amount = CREDIT_PRODUCT_AMOUNTS.get(product_id)
     if credit_amount and event_type in {"INITIAL_PURCHASE", "NON_RENEWING_PURCHASE", "PURCHASE"}:
         money_ref = db.collection("monetization").document(app_user_id)
@@ -864,11 +1012,12 @@ async def revenuecat_webhook(payload: dict, x_webhook_secret: str | None = Heade
             "provider": "revenuecat",
             "product_id": product_id,
             "event_type": event_type,
-            "expires_at": str(expires_at) if expires_at else None,
+            "expires_at": expires_at.isoformat() if isinstance(expires_at, datetime) else (str(expires_at) if expires_at else None),
             "updated_at": now,
             "last_payload": payload,
         },
         merge=True,
     )
-    db.collection("users").document(app_user_id).set({"is_premium": active, "updated_at": now}, merge=True)
+    db.collection("users").document(app_user_id).set({"is_premium": active, "premium_until": expires_at if active else None, "premiumUntil": expires_at if active else None, "updated_at": now}, merge=True)
+    _reconcile_premium_access_state(db, app_user_id, access_kind="revenuecat_webhook")
     return {"received": True, "user_id": app_user_id, "active": active}

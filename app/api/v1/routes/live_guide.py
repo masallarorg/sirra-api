@@ -23,14 +23,15 @@ def _active_premium(user_id: str) -> bool:
     if _is_subscription_active(sub_snap.to_dict() if sub_snap.exists else None):
         return True
 
-    # Test/transition fallback: some existing app builds mirror premium/pro status on users/{uid}.
-    # Firestore security rules should keep this server-controlled in production.
+    # Transition fallback: users/{uid} is only accepted when it also carries a
+    # valid expiry. A bare is_premium=true flag is not enough; otherwise old
+    # manual edits become endless premium.
     user_snap = db.collection("users").document(user_id).get()
     user_data = user_snap.to_dict() if user_snap.exists else {}
-    if bool(user_data.get("is_premium") or user_data.get("is_pro")):
+    if _is_subscription_active(user_data):
         return True
     entitlement = str(user_data.get("entitlement") or "").lower()
-    return entitlement in {"premium", "pro"}
+    return entitlement == "pro" and _is_subscription_active({**user_data, "entitlement": "premium"})
 
 
 @router.post("/chat", response_model=LiveGuideResponse)

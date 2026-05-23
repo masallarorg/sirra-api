@@ -7,6 +7,7 @@ from app.core.errors import AppError
 from app.core.security import CurrentUser, require_current_user
 from app.schemas.profile import UserProfile
 from app.services.daily_access_clock import daily_access_key
+from app.services.monetization_guard import _is_subscription_active, _subscription_expires_at, _subscription_has_lifetime_access
 
 router = APIRouter()
 
@@ -104,12 +105,7 @@ def _payload_from_profile(profile: UserProfile, current_user: CurrentUser) -> di
 
 
 def _subscription_active(data: dict[str, Any] | None) -> bool:
-    data = data or {}
-    active_flag = bool(data.get("active") or data.get("entitlement") == "premium" or data.get("is_premium"))
-    if not active_flag:
-        return False
-    expires_at = _parse_datetime(data.get("expires_at") or data.get("premium_until") or data.get("premiumUntil"))
-    return expires_at is None or expires_at > datetime.now(UTC)
+    return _is_subscription_active(data)
 
 
 def _ensure_welcome_entitlement(db, user_id: str) -> dict[str, Any]:
@@ -165,7 +161,7 @@ def _ensure_welcome_entitlement(db, user_id: str) -> dict[str, Any]:
     money_ref.set(money_payload, merge=True)
 
     should_grant_trial = not _subscription_active(sub_data) and sub_data.get("welcome_trial_granted") is not True
-    expires_at = _parse_datetime((sub_data or {}).get("expires_at")) if not should_grant_trial else trial_ends_at
+    expires_at = _subscription_expires_at(sub_data) if not should_grant_trial else trial_ends_at
     if should_grant_trial:
         sub_ref.set({
             "user_id": user_id,
@@ -180,9 +176,10 @@ def _ensure_welcome_entitlement(db, user_id: str) -> dict[str, Any]:
             "updated_at": now,
         }, merge=True)
     elif _subscription_active(sub_data):
-        expires_at = _parse_datetime((sub_data or {}).get("expires_at"))
+        expires_at = _subscription_expires_at(sub_data)
 
-    is_premium = expires_at is None or expires_at > now if (should_grant_trial or _subscription_active(sub_data)) else False
+    has_active_subscription = should_grant_trial or _subscription_active(sub_data)
+    is_premium = bool(has_active_subscription and (_subscription_has_lifetime_access(sub_data) or (expires_at is not None and expires_at > now)))
     user_ref.set({
         "credits": target_credits,
         "welcome_credits_granted": True,
@@ -250,7 +247,8 @@ async def upsert_profile(
         else:
             fresh = ref.get().to_dict() or {}
             expires_at = _parse_datetime(fresh.get("premium_until") or fresh.get("premiumUntil") or fresh.get("expires_at") or fresh.get("expiresAt"))
-            active = bool(fresh.get("is_premium")) and (expires_at is None or expires_at > datetime.now(UTC))
+            lifetime = bool(fresh.get("lifetime") or fresh.get("lifetime_premium") or fresh.get("is_lifetime_premium"))
+            active = bool(fresh.get("is_premium")) and (lifetime or (expires_at is not None and expires_at > datetime.now(UTC)))
             access = {"is_premium": active, "expires_at": expires_at.isoformat() if expires_at else None}
     except Exception as exc:
         raise AppError(
@@ -302,7 +300,8 @@ async def get_my_profile(current_user: CurrentUser = Depends(require_current_use
     data = snapshot.to_dict() if snapshot.exists else {}
     data = data or {}
     premium_until = _parse_datetime(data.get("premium_until") or data.get("premiumUntil") or data.get("expires_at") or data.get("expiresAt"))
-    premium_flag = bool(data.get("is_premium", False)) and (premium_until is None or premium_until > datetime.now(UTC))
+    lifetime = bool(data.get("lifetime") or data.get("lifetime_premium") or data.get("is_lifetime_premium"))
+    premium_flag = bool(data.get("is_premium", False)) and (lifetime or (premium_until is not None and premium_until > datetime.now(UTC)))
     return UserProfile(
         user_id=current_user.uid,
         display_name=_clean(data.get("display_name")) or _clean(current_user.name) or "Sırra kullanıcısı",

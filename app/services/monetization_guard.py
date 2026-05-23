@@ -25,6 +25,21 @@ FORTUNE_COSTS: dict[str, int] = {
 PREMIUM_DAILY_LIMIT = 5
 WELCOME_CREDITS = 7
 
+PREMIUM_PRODUCT_DURATIONS: dict[str, int] = {
+    "sirra_premium_weekly": 7,
+    "sirra_premium_monthly": 30,
+    "sirra_premium_yearly": 365,
+    "welcome_trial_1_day": 1,
+}
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
 
 @dataclass(frozen=True)
 class FortuneReservation:
@@ -80,14 +95,113 @@ def _parse_expiry(value: Any) -> datetime | None:
         return None
 
 
+def _subscription_has_lifetime_access(data: dict[str, Any] | None) -> bool:
+    data = data or {}
+    product_id = str(data.get("product_id") or data.get("productId") or "").strip().lower()
+    entitlement = str(data.get("entitlement") or "").strip().lower()
+    return (
+        _truthy(data.get("lifetime"))
+        or _truthy(data.get("lifetime_premium"))
+        or _truthy(data.get("is_lifetime_premium"))
+        or product_id in {"sirra_premium_lifetime", "premium_lifetime", "lifetime"}
+        or entitlement in {"lifetime", "premium_lifetime"}
+    )
+
+
+def _subscription_active_flag(data: dict[str, Any] | None) -> bool:
+    data = data or {}
+    entitlement = str(data.get("entitlement") or "").strip().lower()
+    if entitlement in {"free", "expired", "cancelled", "canceled"}:
+        return False
+    return _truthy(data.get("active")) or entitlement == "premium" or _truthy(data.get("is_premium"))
+
+
+def _subscription_duration_days(data: dict[str, Any] | None) -> int | None:
+    data = data or {}
+    for key in ("duration_days", "durationDays", "premium_days", "premiumDays"):
+        try:
+            value = data.get(key)
+            if value is not None:
+                days = int(value)
+                if days > 0:
+                    return days
+        except Exception:
+            pass
+
+    product_id = str(data.get("product_id") or data.get("productId") or "").strip()
+    if product_id in PREMIUM_PRODUCT_DURATIONS:
+        return PREMIUM_PRODUCT_DURATIONS[product_id]
+
+    provider = str(data.get("provider") or "").strip().lower()
+    if "welcome" in provider or _truthy(data.get("welcome_trial_granted")):
+        return 1
+    return None
+
+
+def _subscription_started_at(data: dict[str, Any] | None) -> datetime | None:
+    data = data or {}
+    for key in (
+        "started_at",
+        "start_at",
+        "start_time",
+        "purchased_at",
+        "purchasedAt",
+        "purchase_time",
+        "purchaseTime",
+        "created_at",
+        "createdAt",
+        "activated_at",
+        "activatedAt",
+        "last_verified_at",
+        "lastVerifiedAt",
+    ):
+        parsed = _parse_expiry(data.get(key))
+        if parsed is not None:
+            return parsed
+
+    # Last-resort migration path for old docs that only had active:true and updated_at.
+    # This prevents accidental endless premium while still giving legacy paid docs
+    # a deterministic expiry instead of dropping them immediately.
+    return _parse_expiry(data.get("updated_at") or data.get("updatedAt"))
+
+
+def _subscription_expires_at(data: dict[str, Any] | None) -> datetime | None:
+    data = data or {}
+    explicit = _parse_expiry(
+        data.get("expires_at")
+        or data.get("expiresAt")
+        or data.get("premium_until")
+        or data.get("premiumUntil")
+        or data.get("expiration_at_ms")
+        or data.get("expirationAtMs")
+    )
+    if explicit is not None:
+        return explicit
+    if _subscription_has_lifetime_access(data):
+        return None
+
+    days = _subscription_duration_days(data)
+    started_at = _subscription_started_at(data)
+    if days is not None and started_at is not None:
+        from datetime import timedelta
+
+        return started_at + timedelta(days=days)
+    return None
+
+
 def _is_subscription_active(data: dict[str, Any] | None) -> bool:
     data = data or {}
-    if bool(data.get("active")) or data.get("entitlement") == "premium" or bool(data.get("is_premium")):
-        expires_at = _parse_expiry(data.get("expires_at") or data.get("premium_until") or data.get("premiumUntil"))
-        if expires_at is None:
-            return True
-        return expires_at > datetime.now(UTC)
-    return False
+    if not _subscription_active_flag(data):
+        return False
+    if _subscription_has_lifetime_access(data):
+        return True
+    expires_at = _subscription_expires_at(data)
+    if expires_at is None:
+        # IMPORTANT: active:true without expires_at used to mean endless premium.
+        # That is what made premium days never decrease. Timed premium must have
+        # a real expiry, or enough legacy data to infer one from product duration.
+        return False
+    return expires_at > datetime.now(UTC)
 
 
 def _snapshot_update_time(snapshot: Any) -> datetime | None:
@@ -242,9 +356,12 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
         active_premium = _is_subscription_active(sub)
         premium_device_ok = True
         active_devices_patch = None
+        premium_expires_at = _subscription_expires_at(sub) if active_premium else None
         if active_premium:
             premium_device_ok, active_devices_patch = premium_device_allowed(sub, device_id)
             active_premium = active_premium and premium_device_ok
+            if not active_premium:
+                premium_expires_at = None
 
         data = access_snap.to_dict() if access_snap.exists else {}
         user_data = user or {}
@@ -303,6 +420,8 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
                 "free_used": free_after,
                 "daily_date": today,
                 "is_premium": bool(active_premium),
+                "expires_at": premium_expires_at.isoformat() if premium_expires_at else None,
+                "premium_until": premium_expires_at.isoformat() if premium_expires_at else None,
                 "user_message": user_message,
                 "authoritative_daily_state": True,
                 "daily_reset_applied": daily_reset_applied,
@@ -331,6 +450,9 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
             transaction.set(user_ref, {
                 "credits": credits,
                 "credits_updated_at": now,
+                "is_premium": bool(active_premium),
+                "premium_until": premium_expires_at if active_premium else None,
+                "premiumUntil": premium_expires_at if active_premium else None,
                 "daily_date": today,
                 "premium_used": premium_after,
                 "premium_daily_used": premium_after,
@@ -382,6 +504,9 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
             transaction.set(user_ref, {
                 "credits": credits_after,
                 "credits_updated_at": now,
+                "is_premium": bool(active_premium),
+                "premium_until": premium_expires_at if active_premium else None,
+                "premiumUntil": premium_expires_at if active_premium else None,
                 "daily_date": today,
                 "premium_used": premium_used,
                 "premium_daily_used": premium_used,
