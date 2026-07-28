@@ -422,22 +422,14 @@ def _next_best_actions(total_feedback: int, fortune_count: int, desire: dict[str
 
 
 async def record_fortune_feedback(*, user_id: str, fortune_id: str, status: str, note: str = "") -> dict[str, Any]:
-<<<<<<< HEAD
     clean_status = status if status in {"realized", "partial", "not_realized", "unknown", "reported"} else "unknown"
-=======
-    clean_status = status if status in {"realized", "partial", "not_realized", "unknown"} else "unknown"
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
     db = _firestore_client_or_none()
     if db is None:
         return {
             "status": "saved",
             "fortune_id": fortune_id,
             "feedback_status": clean_status,
-<<<<<<< HEAD
             "trust_message": "Demo modunda geri bildirim kabul edildi.",
-=======
-            "trust_message": "Demo modunda geri bildirim kabul edildi. Gerçek Firebase bağlıyken Sırra Hafızası'na yazılır.",
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
         }
 
     now = datetime.now(UTC)
@@ -453,7 +445,6 @@ async def record_fortune_feedback(*, user_id: str, fortune_id: str, status: str,
             },
             merge=True,
         )
-<<<<<<< HEAD
         if clean_status == "reported":
             db.collection("ai_content_reports").document().set(
                 {
@@ -465,8 +456,6 @@ async def record_fortune_feedback(*, user_id: str, fortune_id: str, status: str,
                     "source": "fortune_result",
                 }
             )
-=======
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
         stats_ref = db.collection("users").document(user_id).collection("private_state").document("fortune_memory")
         snap = stats_ref.get()
         data = snap.to_dict() if snap.exists else {}
@@ -479,9 +468,5 @@ async def record_fortune_feedback(*, user_id: str, fortune_id: str, status: str,
         "status": "saved",
         "fortune_id": fortune_id,
         "feedback_status": clean_status,
-<<<<<<< HEAD
         "trust_message": "İçerik bildirimin alındı ve inceleme kuyruğuna eklendi." if clean_status == "reported" else "Geri bildirimin kaydedildi. Kişisel içgörüler bundan sonra daha tutarlı hesaplanır.",
-=======
-        "trust_message": "Geri bildirimin kaydedildi. Sırra bundan sonra sembol tekrarlarını ve olasılık haritanı daha dürüst hesaplar.",
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
     }

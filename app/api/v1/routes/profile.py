@@ -1,16 +1,12 @@
 from datetime import UTC, datetime, timedelta
 from typing import Any
-<<<<<<< HEAD
 import hashlib
 import logging
-=======
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
 
 from fastapi import APIRouter, Depends
 
 from app.core.errors import AppError
 from app.core.security import CurrentUser, require_current_user
-<<<<<<< HEAD
 from app.schemas.profile import AstrologyDeriveRequest, AstrologyDeriveResponse, UserProfile
 from app.services.daily_access_clock import daily_access_key
 from app.services.monetization_guard import _is_subscription_active, _subscription_expires_at, _subscription_has_lifetime_access
@@ -18,13 +14,6 @@ from app.services.natal_chart import calculate_natal_summary
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-=======
-from app.schemas.profile import UserProfile
-from app.services.daily_access_clock import daily_access_key
-from app.services.monetization_guard import _is_subscription_active, _subscription_expires_at, _subscription_has_lifetime_access
-
-router = APIRouter()
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
 
 WELCOME_CREDITS = 7
 WELCOME_TRIAL_DAYS = 1
@@ -91,27 +80,19 @@ def _payload_from_profile(profile: UserProfile, current_user: CurrentUser) -> di
     payload = {
         "uid": current_user.uid,
         "user_id": current_user.uid,
-<<<<<<< HEAD
         "display_name": _clean(profile.display_name) or _clean(current_user.name) or "Misafir",
-=======
-        "display_name": _clean(profile.display_name) or _clean(current_user.name) or "Sırra kullanıcısı",
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
         "email": email,
         "birth_date": _clean(profile.birth_date),
         "birth_date_display": _clean(profile.birth_date_display),
         "birth_time": _clean(profile.birth_time),
         "birth_place": _clean(profile.birth_place),
-<<<<<<< HEAD
         "birth_latitude": profile.birth_latitude,
         "birth_longitude": profile.birth_longitude,
         "birth_timezone": _clean(profile.birth_timezone) or "Europe/Istanbul",
-=======
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
         "zodiac_sign": _clean(profile.zodiac_sign),
         "zodiac_label": _clean(profile.zodiac_label),
         "rising_sign": _clean(profile.rising_sign),
         "moon_sign": _clean(profile.moon_sign),
-<<<<<<< HEAD
         "astrology_auto_fill": bool(profile.astrology_auto_fill),
         "astrology_calculation_quality": _clean(profile.astrology_calculation_quality),
         "relationship_status": _clean(profile.relationship_status),
@@ -123,12 +104,6 @@ def _payload_from_profile(profile: UserProfile, current_user: CurrentUser) -> di
         "data_saver": bool(profile.data_saver),
         "notification_opt_in": bool(profile.notification_opt_in),
         # A device-local path is never meaningful or safe to persist on the server.
-=======
-        "relationship_status": _clean(profile.relationship_status),
-        "main_interest": _clean(profile.main_interest),
-        "notification_opt_in": bool(profile.notification_opt_in),
-        "selfie_path": _clean(profile.selfie_path),
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
         "selfie_consent_accepted": bool(profile.selfie_consent_accepted),
         "selfie_persona_tags": [str(tag).strip() for tag in (profile.selfie_persona_tags or []) if str(tag).strip()][:12],
         "addressing_preference": _clean(profile.addressing_preference),
@@ -136,15 +111,8 @@ def _payload_from_profile(profile: UserProfile, current_user: CurrentUser) -> di
         "updated_at": now,
         "last_login_at": now,
     }
-<<<<<<< HEAD
     # Premium status, expiry and credit fields are server-owned. Never trust
     # values supplied by a mobile profile payload.
-=======
-    premium_until = _parse_datetime(getattr(profile, "premium_until", None) or getattr(profile, "expires_at", None))
-    if premium_until and premium_until > now:
-        payload["is_premium"] = True
-        payload["premium_until"] = premium_until
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
     return payload
 
 
@@ -172,11 +140,7 @@ def _ensure_welcome_entitlement(db, user_id: str) -> dict[str, Any]:
     money_data = money_snap.to_dict() if money_snap.exists else {}
     sub_data = sub_snap.to_dict() if sub_snap.exists else {}
 
-<<<<<<< HEAD
     current_credits = int((money_data or {}).get("credits") or 0)
-=======
-    current_credits = max(int((user_data or {}).get("credits") or 0), int((money_data or {}).get("credits") or 0))
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
     target_credits = max(current_credits, WELCOME_CREDITS)
     daily_date = str((money_data or {}).get("daily_date") or today)
     premium_used = max(int((money_data or {}).get("premium_used") or 0), int((money_data or {}).get("premium_daily_used") or 0))
@@ -228,30 +192,9 @@ def _ensure_welcome_entitlement(db, user_id: str) -> dict[str, Any]:
 
     has_active_subscription = should_grant_trial or _subscription_active(sub_data)
     is_premium = bool(has_active_subscription and (_subscription_has_lifetime_access(sub_data) or (expires_at is not None and expires_at > now)))
-<<<<<<< HEAD
     # Do not mirror credits or premium status into users/{uid}. That document is
     # intentionally profile-only; monetization/{uid} and subscriptions/{uid}
     # remain the sole sources of financial and entitlement truth.
-=======
-    user_ref.set({
-        "credits": target_credits,
-        "welcome_credits_granted": True,
-        "welcome_trial_granted": True,
-        "is_premium": bool(is_premium),
-        "premium_until": expires_at if expires_at else None,
-        "daily_date": daily_date,
-        "premium_used": premium_used,
-        "premium_daily_used": premium_used,
-        "premium_daily_limit": PREMIUM_DAILY_LIMIT,
-        "premium_daily_remaining": max(0, PREMIUM_DAILY_LIMIT - premium_used),
-        "premium_daily_exhausted": premium_used >= PREMIUM_DAILY_LIMIT,
-        "last_access_kind": "welcome_registration",
-        "authoritative_daily_state": True,
-        "daily_reset_applied": daily_reset_applied,
-        "credits_updated_at": now,
-        "updated_at": now,
-    }, merge=True)
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
 
     return {
         "credits": target_credits,
@@ -275,7 +218,6 @@ def _ensure_welcome_entitlement(db, user_id: str) -> dict[str, Any]:
     }
 
 
-<<<<<<< HEAD
 def _apply_auto_astrology(payload: dict[str, Any]) -> None:
     if payload.get("astrology_auto_fill") is not True:
         return
@@ -346,8 +288,6 @@ async def derive_astrology(
     )
 
 
-=======
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
 @router.post("", response_model=UserProfile)
 async def upsert_profile(
     profile: UserProfile,
@@ -360,36 +300,17 @@ async def upsert_profile(
     """
     db = _firestore_client()
     payload = _payload_from_profile(profile, current_user)
-<<<<<<< HEAD
     _apply_auto_astrology(payload)
-=======
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
     ref = db.collection("users").document(current_user.uid)
 
     try:
         snapshot = ref.get()
-<<<<<<< HEAD
         if not snapshot.exists:
             payload["created_at"] = datetime.now(UTC)
         ref.set(payload, merge=True)
         # This helper is idempotent and is the only registration entitlement
         # writer. Calling it for every upsert also repairs partially-created accounts.
         access = _ensure_welcome_entitlement(db, current_user.uid)
-=======
-        registration_trial_until = _parse_datetime(payload.get("premium_until"))
-        should_grant_welcome = (not snapshot.exists) or (registration_trial_until is not None and registration_trial_until > datetime.now(UTC))
-        if not snapshot.exists:
-            payload["created_at"] = datetime.now(UTC)
-        ref.set(payload, merge=True)
-        if should_grant_welcome:
-            access = _ensure_welcome_entitlement(db, current_user.uid)
-        else:
-            fresh = ref.get().to_dict() or {}
-            expires_at = _parse_datetime(fresh.get("premium_until") or fresh.get("premiumUntil") or fresh.get("expires_at") or fresh.get("expiresAt"))
-            lifetime = bool(fresh.get("lifetime") or fresh.get("lifetime_premium") or fresh.get("is_lifetime_premium"))
-            active = bool(fresh.get("is_premium")) and (lifetime or (expires_at is not None and expires_at > datetime.now(UTC)))
-            access = {"is_premium": active, "expires_at": expires_at.isoformat() if expires_at else None}
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
     except Exception as exc:
         raise AppError(
             error_code="PROFILE_SAVE_FAILED",
@@ -401,27 +322,19 @@ async def upsert_profile(
 
     return UserProfile(
         user_id=current_user.uid,
-<<<<<<< HEAD
         display_name=payload["display_name"] or "Misafir",
-=======
-        display_name=payload["display_name"] or "Sırra kullanıcısı",
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
         email=payload.get("email"),
         birth_date=payload.get("birth_date"),
         birth_date_display=payload.get("birth_date_display"),
         birth_time=payload.get("birth_time"),
         birth_place=payload.get("birth_place"),
-<<<<<<< HEAD
         birth_latitude=payload.get("birth_latitude"),
         birth_longitude=payload.get("birth_longitude"),
         birth_timezone=payload.get("birth_timezone"),
-=======
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
         zodiac_sign=payload.get("zodiac_sign"),
         zodiac_label=payload.get("zodiac_label"),
         rising_sign=payload.get("rising_sign"),
         moon_sign=payload.get("moon_sign"),
-<<<<<<< HEAD
         astrology_auto_fill=payload.get("astrology_auto_fill", True),
         astrology_calculation_quality=payload.get("astrology_calculation_quality"),
         relationship_status=payload.get("relationship_status"),
@@ -433,12 +346,6 @@ async def upsert_profile(
         data_saver=payload.get("data_saver", False),
         notification_opt_in=payload.get("notification_opt_in", False),
         selfie_path=None,
-=======
-        relationship_status=payload.get("relationship_status"),
-        main_interest=payload.get("main_interest"),
-        notification_opt_in=payload.get("notification_opt_in", True),
-        selfie_path=payload.get("selfie_path"),
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
         selfie_consent_accepted=payload.get("selfie_consent_accepted", False),
         selfie_persona_tags=payload.get("selfie_persona_tags", []),
         addressing_preference=payload.get("addressing_preference"),
@@ -463,7 +370,6 @@ async def get_my_profile(current_user: CurrentUser = Depends(require_current_use
 
     data = snapshot.to_dict() if snapshot.exists else {}
     data = data or {}
-<<<<<<< HEAD
     sub_snapshot = db.collection("subscriptions").document(current_user.uid).get()
     sub_data = sub_snapshot.to_dict() if sub_snapshot.exists else {}
     premium_until = _subscription_expires_at(sub_data or {})
@@ -471,30 +377,18 @@ async def get_my_profile(current_user: CurrentUser = Depends(require_current_use
     return UserProfile(
         user_id=current_user.uid,
         display_name=_clean(data.get("display_name")) or _clean(current_user.name) or "Misafir",
-=======
-    premium_until = _parse_datetime(data.get("premium_until") or data.get("premiumUntil") or data.get("expires_at") or data.get("expiresAt"))
-    lifetime = bool(data.get("lifetime") or data.get("lifetime_premium") or data.get("is_lifetime_premium"))
-    premium_flag = bool(data.get("is_premium", False)) and (lifetime or (premium_until is not None and premium_until > datetime.now(UTC)))
-    return UserProfile(
-        user_id=current_user.uid,
-        display_name=_clean(data.get("display_name")) or _clean(current_user.name) or "Sırra kullanıcısı",
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
         email=_clean(data.get("email")) or _clean(current_user.email),
         birth_date=_clean(data.get("birth_date")),
         birth_date_display=_clean(data.get("birth_date_display")),
         birth_time=_clean(data.get("birth_time")),
         birth_place=_clean(data.get("birth_place")),
-<<<<<<< HEAD
         birth_latitude=data.get("birth_latitude"),
         birth_longitude=data.get("birth_longitude"),
         birth_timezone=_clean(data.get("birth_timezone")) or "Europe/Istanbul",
-=======
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
         zodiac_sign=_clean(data.get("zodiac_sign")),
         zodiac_label=_clean(data.get("zodiac_label")),
         rising_sign=_clean(data.get("rising_sign")),
         moon_sign=_clean(data.get("moon_sign")),
-<<<<<<< HEAD
         astrology_auto_fill=data.get("astrology_auto_fill", True) is not False,
         astrology_calculation_quality=_clean(data.get("astrology_calculation_quality")),
         relationship_status=_clean(data.get("relationship_status")),
@@ -506,19 +400,12 @@ async def get_my_profile(current_user: CurrentUser = Depends(require_current_use
         data_saver=bool(data.get("data_saver", False)),
         notification_opt_in=bool(data.get("notification_opt_in", False)),
         selfie_path=None,
-=======
-        relationship_status=_clean(data.get("relationship_status")),
-        main_interest=_clean(data.get("main_interest")),
-        notification_opt_in=bool(data.get("notification_opt_in", True)),
-        selfie_path=_clean(data.get("selfie_path")),
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
         selfie_consent_accepted=bool(data.get("selfie_consent_accepted", False)),
         selfie_persona_tags=data.get("selfie_persona_tags") if isinstance(data.get("selfie_persona_tags"), list) else [],
         addressing_preference=_clean(data.get("addressing_preference")),
         is_premium=premium_flag,
         premium_until=premium_until.isoformat() if premium_until else None,
     )
-<<<<<<< HEAD
 
 
 
@@ -699,5 +586,3 @@ async def delete_my_account(current_user: CurrentUser = Depends(require_current_
         ) from exc
 
     return {"deleted": True, "deleted_documents": deleted_documents}
-=======
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041

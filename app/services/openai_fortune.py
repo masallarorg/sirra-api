@@ -244,12 +244,9 @@ async def generate_generic_fortune(request: GenericFortuneRequest) -> GenericFor
                                     "Kullanıcının verdiği kart, niyet, rüya, isim, tarih ve profil bilgilerine dayan.",
                                     "Mobil uygulamaya API anahtarı dönme; sadece JSON sonucu dön.",
                                     "Görülmeyen/verilmeyen bilgi uydurma. Eksik alan varsa yorumda daha genel konuş.",
-<<<<<<< HEAD
                                     "Yorumu dominant işaret, gizli gerilim, olası dönüm noktası ve sakin kapanış sırasıyla kur.",
                                     "Zamanlama gerekiyorsa kesin tarih değil 3-10 gün, 2-4 hafta veya bir sonraki ay döngüsü gibi geniş pencere kullan.",
                                     "Metin sesli okunacağı için kısa-orta uzunlukta, doğal noktalama içeren Türkçe cümleler yaz.",
-=======
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
                                     "Kesin gelecek garantisi, sağlık/finans/hukuk tavsiyesi verme.",
                                     "Merak uyandıran yakın gelecek sinyallerini olasılık diliyle yaz.",
                                     "Aşk odağında baş harf, iletişim zamanı veya duygusal kalıp gibi ipuçlarını kesinlik iddiası olmadan ver. Örnek ton: S harfi etrafında bir isim/yer/mesaj izi belirebilir.",
@@ -601,13 +598,10 @@ If valid, identify only visible symbols from the grounds. Do not invent symbols.
 Write Turkish text in a premium, intimate, realistic tone. The result is entertainment/fal content, not a guarantee of future events.
 Write as a serious fortune reader: do not flatter the user unnecessarily, do not soften every difficult sign, and do not invent happy outcomes. If a symbol indicates delay, jealousy, distance, conflict, or an unclear person, say it clearly but respectfully.
 Create curiosity and forward-looking tension in each section. Mention possible near-future events as possibilities, not certainties, such as a message, a short trip, a meeting, a delayed conversation, a first initial, or a decision window.
-<<<<<<< HEAD
 Open with one visually grounded dominant symbol and explain why it matters before moving to the categories.
 When the cup supports timing, use broad windows such as “önümüzdeki 7-14 gün” or “bir sonraki ay döngüsü”; never promise an exact date.
 Every category should contain: one observed cup clue, one possible future signal, and one calm reflection/action sentence. Avoid repeated generic boilerplate.
 Write sentences that also sound natural when read aloud: moderate length, clean punctuation, no emoji, no excessive exclamation marks.
-=======
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
 If profile.focus is aşk/ask/love, include one subtle clue in the love section: possible first letters, communication timing, or emotional pattern. Do not claim it as certain; phrase it as “enerji A/M/S harflerinde yoğunlaşıyor” or similar.
 No medical, legal, financial, or mental-health advice. For money/health areas, keep language general and safe.
 Detected symbols must include confidence and approximate image_region in normalized 0-1 coordinates. Symbol regions must refer to the uploaded image where the symbol is actually visible. Keep width/height reasonable, not full image.
@@ -818,13 +812,10 @@ Base the reading on the exact user input: selected cards, dream text, names, bir
 Never claim certainty. Use probability language: "görünüyor", "enerji yoğunlaşıyor", "ihtimal güçleniyor", "yakın dönemde tetiklenebilir".
 Do not flatter unnecessarily. If the input suggests delay, jealousy, distance, confusion, ego, silence, indecision, or emotional imbalance, say it clearly but respectfully.
 Create curiosity and forward-looking tension: possible message, meeting, short trip, first initial, decision window, delayed answer, emotional conversation, or a recurring symbol. Keep it plausible and tied to input.
-<<<<<<< HEAD
 Use a premium narrative arc: “dominant sign → hidden tension → likely turning point → grounded closing”. The result should feel mysterious without being vague or manipulative.
 When timing is supported, use broad and varied windows such as “3-10 gün”, “önümüzdeki 2-4 hafta” or “bir sonraki ay döngüsü”; never promise an exact event date.
 Each section must add new information. Avoid generic repetition, absolute fate language, excessive compliments, emojis, and melodramatic threats.
 Write for both reading and natural voice narration: clean punctuation, moderate sentence length, pronounceable Turkish, and no markdown symbols.
-=======
->>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
 If the type is tarot/katina/oracle, interpret every selected card and how the cards connect. Do not replace the selected cards with other cards.
 If the type is dream, extract only symbols mentioned in the dream text.
 If the type is numerology, use the given name and birth date as input; do not invent unknown dates.
