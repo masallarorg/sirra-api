@@ -172,7 +172,11 @@ class GenericFortuneResponse(BaseModel):
 
 
 class FortuneFeedbackRequest(BaseModel):
+<<<<<<< HEAD
     status: Literal["realized", "partial", "not_realized", "unknown", "reported"] = "unknown"
+=======
+    status: Literal["realized", "partial", "not_realized", "unknown"] = "unknown"
+>>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
     note: str = Field(default="", max_length=500)
 
 
@@ -180,7 +184,11 @@ class FortuneFeedbackResponse(BaseModel):
     status: str = "saved"
     fortune_id: str
     feedback_status: str
+<<<<<<< HEAD
     trust_message: str = "Geri bildirimin kişisel içgörüleri ve içerik güvenliğini iyileştirmek için kullanılır."
+=======
+    trust_message: str = "Geri bildirimin yalnızca sana özel Sırra Hafızası'nı iyileştirmek için kullanılır."
+>>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
 
 
 class SirraCompassResponse(BaseModel):

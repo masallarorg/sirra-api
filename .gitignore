@@ -8,5 +8,9 @@ serviceAccountKey.json
 firebase-adminsdk*.json
 *.key
 *.pem
+<<<<<<< HEAD
 .DS_Store
 cloudrun.env.yaml
+=======
+.DS_Store
+>>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041

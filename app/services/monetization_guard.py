@@ -250,6 +250,7 @@ def latest_credit_balance(
     user_snapshot: Any | None = None,
     default: int = WELCOME_CREDITS,
 ) -> int:
+<<<<<<< HEAD
     """Return the server-owned credit balance.
 
     ``monetization/{uid}`` is the sole financial source. ``users/{uid}`` used to
@@ -271,6 +272,45 @@ def latest_credit_balance(
         if user is not None:
             return user[0]
     return max(0, int(default))
+=======
+    """Pick the authoritative credit balance from mirrored Firestore docs.
+
+    The old implementation used ``max(monetization.credits, users.credits)`` to
+    protect rewarded-ad credits from stale lower mirrors. That made Firebase
+    Console/admin decreases impossible: lowering 20 -> 5 was immediately ignored
+    because the other mirror still had 20. We now choose the newest credit field
+    by credits_updated_at/updated_at, and fall back to Firestore document
+    update_time for manual console edits. If versions are equal or unknown, the
+    higher value still wins as the safe fallback.
+    """
+    candidates = [
+        item
+        for item in (
+            _credit_candidate(monetization_data, monetization_snapshot),
+            _credit_candidate(user_data, user_snapshot),
+        )
+        if item is not None
+    ]
+    if not candidates:
+        return max(0, int(default))
+    if len(candidates) == 1:
+        return candidates[0][0]
+
+    dated = [item for item in candidates if item[1] is not None]
+    if len(dated) == len(candidates):
+        dated.sort(key=lambda item: item[1] or datetime.min.replace(tzinfo=UTC), reverse=True)
+        newest_time = dated[0][1]
+        newest = [item for item in dated if item[1] == newest_time]
+        if len(newest) == 1:
+            return newest[0][0]
+        return max(item[0] for item in newest)
+
+    # Missing versions mean we cannot prove which mirror is newer. Prefer the
+    # larger balance so a stale mirror cannot accidentally erase paid/rewarded
+    # credits; runtime admin decreases are handled by document update_time when
+    # the backend reads Firestore snapshots.
+    return max(item[0] for item in candidates)
+>>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
 
 
 async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: str | None = None) -> FortuneReservation:
@@ -322,6 +362,10 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
     today = _today_key()
     cost = fortune_cost(fortune_type)
     sub_ref = db.collection("subscriptions").document(user_id)
+<<<<<<< HEAD
+=======
+    user_ref = db.collection("users").document(user_id)
+>>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
     access_ref = db.collection("monetization").document(user_id)
 
     transaction = db.transaction()
@@ -329,9 +373,17 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
     @firestore.transactional
     def _reserve(transaction):
         sub_snap = sub_ref.get(transaction=transaction)
+<<<<<<< HEAD
         access_snap = access_ref.get(transaction=transaction)
 
         sub = sub_snap.to_dict() if sub_snap.exists else None
+=======
+        user_snap = user_ref.get(transaction=transaction)
+        access_snap = access_ref.get(transaction=transaction)
+
+        sub = sub_snap.to_dict() if sub_snap.exists else None
+        user = user_snap.to_dict() if user_snap.exists else None
+>>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
         # Güvenlik: premium yetkisi sadece subscriptions koleksiyonundan gelir.
         # users.is_premium sadece UI yansımasıdır; kullanıcı tarafından yazılabilir kabul edilmemelidir.
         active_premium = _is_subscription_active(sub)
@@ -345,6 +397,7 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
                 premium_expires_at = None
 
         data = access_snap.to_dict() if access_snap.exists else {}
+<<<<<<< HEAD
         if not data:
             data = {"credits": WELCOME_CREDITS, "welcome_credits_granted": True}
         # monetization/{uid} is the only financial source used at runtime.
@@ -357,6 +410,24 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
         daily_date = str(data.get("daily_date") or "")
         premium_used = max(int(data.get("premium_used") or 0), int(data.get("premium_daily_used") or 0))
         free_used = max(int(data.get("free_used") or 0), int(data.get("standard_free_daily_used") or 0))
+=======
+        user_data = user or {}
+        if not data:
+            data = {"credits": WELCOME_CREDITS, "welcome_credits_granted": True}
+        # Credits are mirrored in monetization/{uid} and users/{uid}. The
+        # authoritative balance is the newest credit field, not the largest one:
+        # otherwise Firebase Console/admin decreases are ignored forever.
+        credits = latest_credit_balance(
+            data,
+            user_data,
+            monetization_snapshot=access_snap,
+            user_snapshot=user_snap,
+            default=WELCOME_CREDITS,
+        )
+        daily_date = str(data.get("daily_date") or user_data.get("daily_date") or "")
+        premium_used = max(int(data.get("premium_used") or 0), int(data.get("premium_daily_used") or 0), int(user_data.get("premium_used") or 0), int(user_data.get("premium_daily_used") or 0))
+        free_used = max(int(data.get("free_used") or 0), int(data.get("standard_free_daily_used") or 0), int(user_data.get("free_used") or 0), int(user_data.get("standard_free_daily_used") or 0))
+>>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
         daily_reset_applied = daily_date != today
         if daily_reset_applied:
             premium_used = 0
@@ -424,6 +495,26 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
                 "last_access_message": None,
             }
             transaction.set(access_ref, patch, merge=True)
+<<<<<<< HEAD
+=======
+            transaction.set(user_ref, {
+                "credits": credits,
+                "credits_updated_at": now,
+                "is_premium": bool(active_premium),
+                "premium_until": premium_expires_at if active_premium else None,
+                "premiumUntil": premium_expires_at if active_premium else None,
+                "daily_date": today,
+                "premium_used": premium_after,
+                "premium_daily_used": premium_after,
+                "premium_daily_limit": PREMIUM_DAILY_LIMIT,
+                "premium_daily_remaining": access_state["premium_daily_remaining"],
+                "premium_daily_exhausted": access_state["premium_daily_exhausted"],
+                "last_access_kind": "premium_daily",
+                "authoritative_daily_state": True,
+                "daily_reset_applied": daily_reset_applied,
+                "updated_at": now,
+            }, merge=True)
+>>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
             if active_devices_patch is not None:
                 transaction.set(sub_ref, {"active_devices": active_devices_patch, "updated_at": now}, merge=True)
             return FortuneReservation(user_id=user_id, fortune_type=fortune_type, kind="premium_daily", cost=0, date_key=today, access_state=access_state)
@@ -461,6 +552,26 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
                 "last_access_message": premium_credit_notice,
             }
             transaction.set(access_ref, patch, merge=True)
+<<<<<<< HEAD
+=======
+            transaction.set(user_ref, {
+                "credits": credits_after,
+                "credits_updated_at": now,
+                "is_premium": bool(active_premium),
+                "premium_until": premium_expires_at if active_premium else None,
+                "premiumUntil": premium_expires_at if active_premium else None,
+                "daily_date": today,
+                "premium_used": premium_used,
+                "premium_daily_used": premium_used,
+                "premium_daily_limit": PREMIUM_DAILY_LIMIT,
+                "premium_daily_remaining": access_state["premium_daily_remaining"],
+                "premium_daily_exhausted": access_state["premium_daily_exhausted"],
+                "last_access_kind": "credits",
+                "authoritative_daily_state": True,
+                "daily_reset_applied": daily_reset_applied,
+                "updated_at": now,
+            }, merge=True)
+>>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
             return FortuneReservation(user_id=user_id, fortune_type=fortune_type, kind="credits", cost=cost, date_key=today, access_state=access_state)
 
         premium_exhausted_prefix = (
@@ -508,11 +619,22 @@ async def refund_fortune_access(reservation: FortuneReservation) -> None:
     try:
         db = _firestore_client()
         ref = db.collection("monetization").document(reservation.user_id)
+<<<<<<< HEAD
         snap = ref.get()
         data = snap.to_dict() if snap.exists else {}
         credits = latest_credit_balance(data, None, monetization_snapshot=snap, default=0)
         premium_used = max(int(data.get("premium_used") or 0), int(data.get("premium_daily_used") or 0))
         free_used = max(int(data.get("free_used") or 0), int(data.get("standard_free_daily_used") or 0))
+=======
+        user_ref = db.collection("users").document(reservation.user_id)
+        snap = ref.get()
+        user_snap = user_ref.get()
+        data = snap.to_dict() if snap.exists else {}
+        user_data = user_snap.to_dict() if user_snap.exists else {}
+        credits = latest_credit_balance(data, user_data, monetization_snapshot=snap, user_snapshot=user_snap, default=0)
+        premium_used = max(int(data.get("premium_used") or 0), int(data.get("premium_daily_used") or 0), int(user_data.get("premium_used") or 0), int(user_data.get("premium_daily_used") or 0))
+        free_used = max(int(data.get("free_used") or 0), int(data.get("standard_free_daily_used") or 0), int(user_data.get("free_used") or 0), int(user_data.get("standard_free_daily_used") or 0))
+>>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
         now = datetime.now(UTC)
         patch: dict[str, Any] = {"updated_at": now}
         patch["authoritative_daily_state"] = True
@@ -530,6 +652,22 @@ async def refund_fortune_access(reservation: FortuneReservation) -> None:
             patch["free_used"] = max(0, free_used - 1)
             patch["standard_free_daily_used"] = patch["free_used"]
         ref.set(patch, merge=True)
+<<<<<<< HEAD
+=======
+        user_patch = {"updated_at": now, "authoritative_daily_state": True, "last_access_kind": patch["last_access_kind"]}
+        if "credits" in patch:
+            user_patch.update({"credits": patch["credits"], "credits_updated_at": now})
+        if "premium_daily_used" in patch:
+            user_patch.update({
+                "premium_used": patch["premium_used"],
+                "premium_daily_used": patch["premium_daily_used"],
+                "premium_daily_limit": PREMIUM_DAILY_LIMIT,
+                "premium_daily_remaining": patch["premium_daily_remaining"],
+                "premium_daily_exhausted": patch["premium_daily_exhausted"],
+            })
+        if len(user_patch) > 3:
+            user_ref.set(user_patch, merge=True)
+>>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
         if "credits" in patch:
             refund_access = dict(reservation.access_state or {})
             refund_access["credits"] = patch["credits"]

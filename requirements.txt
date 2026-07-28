@@ -9,5 +9,8 @@ Pillow==11.0.0
 python-json-logger==3.2.1
 pytest==8.3.4
 httpx==0.28.1
+<<<<<<< HEAD
 cryptography==44.0.0
 pyswisseph==2.10.3.2
+=======
+>>>>>>> 5d0b703df471b4dc80f84320abb737f4a7605041
