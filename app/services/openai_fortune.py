@@ -398,17 +398,20 @@ The portrait is fictional entertainment and must not claim to identify a real cu
 
 
 async def generate_palm_fortune(*, user_id: str, profile: dict, right_image_bytes: bytes, left_image_bytes: bytes) -> GenericFortuneResult:
-    """Create a detailed palm reading from a real palm photo.
+    """Create a detailed palm reading from real right/left palm photos.
 
     The model should inspect the visible palm lines and return a structured Turkish
     entertainment reading. It must not make medical claims or biometric identity claims.
     """
+    safe_profile = profile if isinstance(profile, dict) else {}
+    focus = str(safe_profile.get("focus") or "Genel enerji").strip() or "Genel enerji"
+
     if settings.mock_ai:
         request = GenericFortuneRequest(
             type_id="palm",
-            focus=profile.get("focus") or "Genel enerji",
-            payload={"hand": profile.get("hand") or "Sağ ve sol el", "question": profile.get("question") or "", "right_palm_photo_added": True, "left_palm_photo_added": True},
-            profile=profile,
+            focus=focus,
+            payload={"hand": safe_profile.get("hand") or "Sağ ve sol el", "question": safe_profile.get("question") or "", "right_palm_photo_added": True, "left_palm_photo_added": True},
+            profile=safe_profile,
         )
         result = _mock_generic_result(type_id="palm", request=request)
         result.title = "El Falı Detaylı Analiz"
@@ -423,7 +426,7 @@ async def generate_palm_fortune(*, user_id: str, profile: dict, right_image_byte
             FortuneDetailBlock(title="Yakın dönem sinyali", text="Bir mesaj, kısa görüşme ya da ertelenmiş cevap yeniden görünür hale gelebilir; kesin değil ama iletişim enerjisi belirgin."),
         ]
         result.symbols = ["yasam_cizgisi", "kalp_cizgisi", "zihin_cizgisi", "kader_cizgisi", "mesaj"]
-        return _augment_generic_result(result, profile, profile.get("focus") or "Genel enerji")
+        return _augment_generic_result(result, safe_profile, focus)
 
     if not settings.openai_api_key:
         raise AppError(
@@ -441,7 +444,8 @@ async def generate_palm_fortune(*, user_id: str, profile: dict, right_image_byte
                 {
                     "request_id": f"palm_{uuid4().hex[:12]}",
                     "user_id_hash_hint": user_id[-8:],
-                    "profile": profile,
+                    "profile": safe_profile,
+                    "focus": focus,
                     "rules": [
                         "Yüklenen sağ ve sol avuç içi fotoğraflarındaki görünen çizgileri ve bölgeleri temel al.",
                         "Sağ el ve sol el arasında çizgi derinliği, süreklilik, dallanma ve tepe yoğunluğu farklarını karşılaştır.",
@@ -484,7 +488,7 @@ async def generate_palm_fortune(*, user_id: str, profile: dict, right_image_byte
         ) from exc
     data["fortune_id"] = data.get("fortune_id") or f"palm_{uuid4().hex[:10]}"
     data["type"] = "palm"
-    return _augment_generic_result(GenericFortuneResult.model_validate(data), request.profile, request.focus)
+    return _augment_generic_result(GenericFortuneResult.model_validate(data), safe_profile, focus)
 
 
 def _palm_developer_instructions() -> str:
