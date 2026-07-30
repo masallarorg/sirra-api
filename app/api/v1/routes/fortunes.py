@@ -13,6 +13,7 @@ from app.services.monetization_guard import reserve_fortune_access, refund_fortu
 from app.services.symbol_linker import find_cross_fortune_connections
 from app.services.image_validation import prepare_openai_image
 from app.services.personal_memory import enrich_profile_with_memory, store_fortune_memory
+from app.services.push_notifications import notify_fortune_ready
 from app.services.sirra_compass import build_sirra_compass, record_fortune_feedback
 
 router = APIRouter()
@@ -54,6 +55,7 @@ async def generate_fortune(request: GenericFortuneRequest, current_user: Current
         )
         await _save_generic_history(user_id=current_user.uid, result=result, request=request)
         await store_fortune_memory(user_id=current_user.uid, fortune_id=result.fortune_id, fortune_type=result.type, symbols=result.symbols, summary=result.summary, focus=request.focus)
+        await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="Fal yorumun")
         return GenericFortuneResponse(fortune_id=result.fortune_id, status="completed", result=result, access=reservation.access_state)
     except Exception:
         await refund_fortune_access(reservation)
@@ -107,6 +109,7 @@ async def coffee_fortune(
         )
         await _save_coffee_history(user_id=current_user.uid, result=result, profile=profile)
         await store_fortune_memory(user_id=current_user.uid, fortune_id=result.fortune_id, fortune_type="coffee", symbols=[symbol.symbol for symbol in result.detected_symbols], summary=result.summary, focus=profile.get("focus"))
+        await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="Kahve falın")
 
         return CoffeeFortuneResponse(
             fortune_id=result.fortune_id,
@@ -170,6 +173,7 @@ async def palm_fortune(
         )
         await _save_generic_history(user_id=current_user.uid, result=result, request=request)
         await store_fortune_memory(user_id=current_user.uid, fortune_id=result.fortune_id, fortune_type=result.type, symbols=result.symbols, summary=result.summary, focus=focus)
+        await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="Fal yorumun")
         return GenericFortuneResponse(fortune_id=result.fortune_id, status="completed", result=result, access=reservation.access_state)
     except Exception:
         await refund_fortune_access(reservation)
@@ -211,6 +215,7 @@ async def soulmate_fortune(
         request = GenericFortuneRequest(type_id="soulmate", focus=focus, payload={"theme": theme, "selfie_added": True}, profile=profile)
         await _save_generic_history(user_id=current_user.uid, result=result, request=request)
         await store_fortune_memory(user_id=current_user.uid, fortune_id=result.fortune_id, fortune_type=result.type, symbols=result.symbols, summary=result.summary, focus=focus)
+        await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="Fal yorumun")
         return GenericFortuneResponse(fortune_id=result.fortune_id, status="completed", result=result, access=reservation.access_state)
     except Exception:
         await refund_fortune_access(reservation)
@@ -229,6 +234,7 @@ async def dream_fortune(request: DreamFortuneRequest, current_user: CurrentUser 
             new_symbols=result.symbols,
         )
         await store_fortune_memory(user_id=current_user.uid, fortune_id=result.fortune_id, fortune_type=result.type, symbols=result.symbols, summary=result.summary, focus="Rüya")
+        await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="Rüya yorumun")
         return DreamFortuneResponse(status="completed", result=result, access=reservation.access_state)
     except Exception:
         await refund_fortune_access(reservation)

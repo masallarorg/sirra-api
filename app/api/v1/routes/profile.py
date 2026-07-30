@@ -9,6 +9,7 @@ from app.core.errors import AppError
 from app.core.security import CurrentUser, require_current_user
 from app.schemas.profile import AstrologyDeriveRequest, AstrologyDeriveResponse, UserProfile
 from app.services.daily_access_clock import daily_access_key
+from app.services.security_guard import device_hash
 from app.services.monetization_guard import _is_subscription_active, _subscription_expires_at, _subscription_has_lifetime_access
 from app.services.natal_chart import calculate_natal_summary
 
@@ -16,7 +17,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 WELCOME_CREDITS = 7
-WELCOME_TRIAL_DAYS = 1
+WELCOME_TRIAL_DAYS = 2
 PREMIUM_DAILY_LIMIT = 5
 
 
@@ -120,140 +121,108 @@ def _subscription_active(data: dict[str, Any] | None) -> bool:
     return _is_subscription_active(data)
 
 
-def _ensure_welcome_entitlement(db, user_id: str) -> dict[str, Any]:
-    """Idempotently grant every new account 7 credits and a 1-day premium trial.
+def _ensure_welcome_entitlement(db, user_id: str, device_id: str | None) -> dict[str, Any]:
+    """Atomically grant 7 welcome credits and a one-device-only 2-day trial."""
+    from firebase_admin import firestore
 
-    It never adds 7 credits twice: the balance becomes at least 7 and the
-    welcome_credits_granted/welcome_trial_granted flags are persisted.
-    """
     now = datetime.now(UTC)
     today = daily_access_key(now)
-    trial_ends_at = now + timedelta(days=WELCOME_TRIAL_DAYS)
-    user_ref = db.collection("users").document(user_id)
+    trial_ends_at = now + timedelta(days=2)
+    hashed_device = device_hash(device_id)
+
     money_ref = db.collection("monetization").document(user_id)
     sub_ref = db.collection("subscriptions").document(user_id)
+    device_ref = db.collection("promo_devices").document(hashed_device) if hashed_device else None
+    transaction = db.transaction()
 
-    user_snap = user_ref.get()
-    money_snap = money_ref.get()
-    sub_snap = sub_ref.get()
-    user_data = user_snap.to_dict() if user_snap.exists else {}
-    money_data = money_snap.to_dict() if money_snap.exists else {}
-    sub_data = sub_snap.to_dict() if sub_snap.exists else {}
+    @firestore.transactional
+    def _apply(transaction):
+        money_snap = money_ref.get(transaction=transaction)
+        sub_snap = sub_ref.get(transaction=transaction)
+        device_snap = device_ref.get(transaction=transaction) if device_ref is not None else None
 
-    current_credits = int((money_data or {}).get("credits") or 0)
-    target_credits = max(current_credits, WELCOME_CREDITS)
-    daily_date = str((money_data or {}).get("daily_date") or today)
-    premium_used = max(int((money_data or {}).get("premium_used") or 0), int((money_data or {}).get("premium_daily_used") or 0))
-    free_used = max(int((money_data or {}).get("free_used") or 0), int((money_data or {}).get("standard_free_daily_used") or 0))
-    daily_reset_applied = daily_date != today
-    if daily_reset_applied:
-        daily_date = today
-        premium_used = 0
-        free_used = 0
+        money = money_snap.to_dict() if money_snap.exists else {}
+        sub = sub_snap.to_dict() if sub_snap.exists else {}
+        device = device_snap.to_dict() if device_snap is not None and device_snap.exists else {}
 
-    money_payload = {
-        "credits": target_credits,
-        "welcome_credits_granted": True,
-        "welcome_trial_granted": True,
-        "daily_date": daily_date,
-        "premium_used": premium_used,
-        "premium_daily_used": premium_used,
-        "premium_daily_limit": PREMIUM_DAILY_LIMIT,
-        "premium_daily_remaining": max(0, PREMIUM_DAILY_LIMIT - premium_used),
-        "free_used": free_used,
-        "standard_free_daily_used": free_used,
-        "last_access_kind": "welcome_registration",
-        "authoritative_daily_state": True,
-        "daily_reset_applied": daily_reset_applied,
-        "credits_updated_at": now,
-        "updated_at": now,
-    }
-    if not money_snap.exists:
-        money_payload["created_at"] = now
-    money_ref.set(money_payload, merge=True)
+        credits = max(int(money.get("credits") or 0), WELCOME_CREDITS)
+        daily_date = str(money.get("daily_date") or today)
+        premium_used = max(int(money.get("premium_used") or 0), int(money.get("premium_daily_used") or 0))
+        free_used = max(int(money.get("free_used") or 0), int(money.get("standard_free_daily_used") or 0))
+        if daily_date != today:
+            daily_date = today
+            premium_used = 0
+            free_used = 0
 
-    should_grant_trial = not _subscription_active(sub_data) and sub_data.get("welcome_trial_granted") is not True
-    expires_at = _subscription_expires_at(sub_data) if not should_grant_trial else trial_ends_at
-    if should_grant_trial:
-        sub_ref.set({
-            "user_id": user_id,
-            "active": True,
-            "entitlement": "premium",
-            "provider": "backend_welcome_trial",
-            "product_id": "welcome_trial_1_day",
-            "expires_at": trial_ends_at.isoformat(),
+        already_trialed = sub.get("welcome_trial_granted") is True
+        device_claimed_elsewhere = bool(device.get("claimed")) and device.get("user_id") != user_id
+        grant_trial = bool(hashed_device) and not already_trialed and not device_claimed_elsewhere and not _subscription_active(sub)
+
+        transaction.set(money_ref, {
+            "credits": credits,
+            "welcome_credits_granted": True,
+            "daily_date": daily_date,
+            "premium_used": premium_used,
+            "premium_daily_used": premium_used,
             "premium_daily_limit": PREMIUM_DAILY_LIMIT,
-            "welcome_trial_granted": True,
-            "created_at": now,
+            "premium_daily_remaining": max(0, PREMIUM_DAILY_LIMIT - premium_used),
+            "free_used": free_used,
+            "standard_free_daily_used": free_used,
+            "authoritative_daily_state": True,
+            "credits_updated_at": now,
             "updated_at": now,
         }, merge=True)
-    elif _subscription_active(sub_data):
-        expires_at = _subscription_expires_at(sub_data)
 
-    has_active_subscription = should_grant_trial or _subscription_active(sub_data)
-    is_premium = bool(has_active_subscription and (_subscription_has_lifetime_access(sub_data) or (expires_at is not None and expires_at > now)))
-    # Do not mirror credits or premium status into users/{uid}. That document is
-    # intentionally profile-only; monetization/{uid} and subscriptions/{uid}
-    # remain the sole sources of financial and entitlement truth.
+        expires_at = _subscription_expires_at(sub)
+        if grant_trial:
+            expires_at = trial_ends_at
+            transaction.set(sub_ref, {
+                "user_id": user_id,
+                "active": True,
+                "entitlement": "premium",
+                "provider": "backend_welcome_trial",
+                "product_id": "welcome_trial_2_days",
+                "duration_days": 2,
+                "started_at": now,
+                "expires_at": trial_ends_at.isoformat(),
+                "premium_daily_limit": PREMIUM_DAILY_LIMIT,
+                "welcome_trial_granted": True,
+                "promo_device_hash": hashed_device,
+                "updated_at": now,
+            }, merge=True)
+            transaction.set(device_ref, {
+                "claimed": True,
+                "user_id": user_id,
+                "claim_type": "welcome_trial",
+                "claimed_at": now,
+                "expires_at": trial_ends_at.isoformat(),
+            }, merge=True)
 
-    return {
-        "credits": target_credits,
-        "charged_credits": 0,
-        "access_kind": "welcome_registration",
-        "premium_daily_used": premium_used,
-        "premium_used": premium_used,
-        "premium_daily_limit": PREMIUM_DAILY_LIMIT,
-        "premium_daily_remaining": max(0, PREMIUM_DAILY_LIMIT - premium_used),
-        "premium_daily_exhausted": premium_used >= PREMIUM_DAILY_LIMIT,
-        "standard_free_daily_used": free_used,
-        "free_used": free_used,
-        "daily_date": daily_date,
-        "is_premium": bool(is_premium),
-        "expires_at": expires_at.isoformat() if expires_at else None,
-        "user_message": None,
-        "authoritative_daily_state": True,
-        "daily_reset_applied": daily_reset_applied,
-        "daily_reset_timezone": "Europe/Istanbul",
-        "daily_reset_rule": "Her gün 00:01 Türkiye saatinde yenilenir.",
-    }
+        active = grant_trial or _subscription_active(sub)
+        remaining = max(0, PREMIUM_DAILY_LIMIT - premium_used) if active else 0
+        return {
+            "credits": credits,
+            "charged_credits": 0,
+            "access_kind": "welcome_trial" if grant_trial else "welcome_registration",
+            "premium_daily_used": premium_used,
+            "premium_used": premium_used,
+            "premium_daily_limit": PREMIUM_DAILY_LIMIT,
+            "premium_daily_remaining": remaining,
+            "premium_daily_exhausted": bool(active and remaining == 0),
+            "standard_free_daily_used": free_used,
+            "free_used": free_used,
+            "daily_date": daily_date,
+            "is_premium": bool(active),
+            "expires_at": expires_at.isoformat() if expires_at else None,
+            "trial_granted": grant_trial,
+            "trial_denied_device_already_used": device_claimed_elsewhere,
+            "authoritative_daily_state": True,
+            "daily_reset_applied": False,
+            "daily_reset_timezone": "Europe/Istanbul",
+            "daily_reset_rule": "Premium üyeye her gün 5 ücretsiz yorum hakkı verilir.",
+        }
 
-
-def _apply_auto_astrology(payload: dict[str, Any]) -> None:
-    if payload.get("astrology_auto_fill") is not True:
-        return
-    required = (
-        payload.get("birth_date"),
-        payload.get("birth_time"),
-        payload.get("birth_latitude"),
-        payload.get("birth_longitude"),
-    )
-    if any(value is None or str(value).strip() == "" for value in required):
-        return
-    try:
-        result = calculate_natal_summary(
-            birth_date=str(payload["birth_date"]),
-            birth_time=str(payload["birth_time"]),
-            latitude=float(payload["birth_latitude"]),
-            longitude=float(payload["birth_longitude"]),
-            timezone_name=str(payload.get("birth_timezone") or "Europe/Istanbul"),
-        )
-    except (TypeError, ValueError) as exc:
-        logger.info("automatic astrology skipped: %s", exc)
-        return
-    payload["zodiac_label"] = result.sun_sign
-    slug_map = {
-        "Koç": "koc", "Boğa": "boga", "İkizler": "ikizler", "Yengeç": "yengec",
-        "Aslan": "aslan", "Başak": "basak", "Terazi": "terazi", "Akrep": "akrep",
-        "Yay": "yay", "Oğlak": "oglak", "Kova": "kova", "Balık": "balik",
-    }
-    payload["zodiac_sign"] = slug_map.get(result.sun_sign, payload.get("zodiac_sign"))
-    payload["moon_sign"] = result.moon_sign
-    payload["rising_sign"] = result.rising_sign
-    payload["birth_timezone"] = result.timezone
-    payload["birth_latitude"] = result.latitude
-    payload["birth_longitude"] = result.longitude
-    payload["astrology_calculation_quality"] = result.quality
-    payload["astrology_calculated_at"] = datetime.now(UTC)
+    return _apply(transaction)
 
 
 @router.post("/astrology/derive", response_model=AstrologyDeriveResponse)
@@ -296,7 +265,7 @@ async def upsert_profile(
     """Persist the signed-in user's profile with Firebase Admin.
 
     New accounts are also granted the registration entitlement immediately:
-    7 credits and a 1-day premium trial. The grant is idempotent.
+    7 credits and a 2-day premium trial. The grant is idempotent.
     """
     db = _firestore_client()
     payload = _payload_from_profile(profile, current_user)
@@ -310,7 +279,7 @@ async def upsert_profile(
         ref.set(payload, merge=True)
         # This helper is idempotent and is the only registration entitlement
         # writer. Calling it for every upsert also repairs partially-created accounts.
-        access = _ensure_welcome_entitlement(db, current_user.uid)
+        access = _ensure_welcome_entitlement(db, current_user.uid, current_user.device_id)
     except Exception as exc:
         raise AppError(
             error_code="PROFILE_SAVE_FAILED",

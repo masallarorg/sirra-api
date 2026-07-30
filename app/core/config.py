@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "Fal AI Backend"
+    app_name: str = "Sırra Backend"
     environment: str = "production"
     mock_ai: bool = False
     allow_mock_auth: bool = False
@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     google_tts_enabled: bool = True
     google_tts_language_code: str = 'tr-TR'
     google_tts_voice_name: str = 'tr-TR-Chirp3-HD-Aoede'
+    speech_fallback_enabled: bool = True
+    speech_model: str = 'gpt-4o-mini-tts'
+    speech_voice: str = 'marin'
     firebase_credentials_path: str | None = None
     cors_origins: str = "*"
     cors_allow_credentials: bool = False

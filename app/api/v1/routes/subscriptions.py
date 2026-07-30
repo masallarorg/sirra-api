@@ -441,7 +441,7 @@ async def subscription_products() -> dict[str, Any]:
             {"id": "sirra_credits_75", "credits": 75},
         ],
         "rewarded_ads": {"reward_credits": 2, "daily_limit": 3},
-        "welcome_trial": {"premium_days": 1, "once_per_user": True, "once_per_device": True, "selfie_optional": True, "max_premium_devices": 2, "requires_explicit_consent": True},
+        "welcome_trial": {"premium_days": 2, "once_per_user": True, "once_per_device": True, "selfie_optional": True, "max_premium_devices": 2, "requires_explicit_consent": True},
     }
 
 
@@ -508,7 +508,7 @@ async def claim_welcome_persona_reward(
                 status_code=409,
             )
 
-        expires_at = now + timedelta(days=1)
+        expires_at = now + timedelta(days=2)
         credits = int(money.get("credits") or 0)
         premium_used = max(int(money.get("premium_used") or 0), int(money.get("premium_daily_used") or 0))
         free_used = max(int(money.get("free_used") or 0), int(money.get("standard_free_daily_used") or 0))
@@ -523,7 +523,7 @@ async def claim_welcome_persona_reward(
             "active": True,
             "entitlement": "premium",
             "provider": "welcome_trial",
-            "product_id": "welcome_trial_1_day",
+            "product_id": "welcome_trial_2_days",
             "expires_at": expires_at.isoformat(),
             "welcome_persona_claimed": True,
             "selfie_wheel_claimed": True,
