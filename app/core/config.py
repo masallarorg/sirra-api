@@ -8,7 +8,8 @@ class Settings(BaseSettings):
     mock_ai: bool = False
     allow_mock_auth: bool = False
     openai_api_key: str | None = None
-    openai_model: str = "gpt-5.6-luna"
+    openai_model: str = "gpt-5.6"
+    openai_image_model: str = "gpt-image-2"
     openai_api_base: str = "https://api.openai.com/v1"
     openai_reasoning_effort: str | None = "low"
     openai_max_output_tokens: int = 2600
@@ -35,6 +36,7 @@ class Settings(BaseSettings):
     admob_reward_amount: int = 2
     admob_ssv_keys_url: str = "https://www.gstatic.com/admob/reward/verifier-keys.json"
     admob_ssv_max_age_seconds: int = 86400
+    admin_emails: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
@@ -43,6 +45,10 @@ class Settings(BaseSettings):
         if self.trusted_hosts.strip() == "*":
             return ["*"]
         return [item.strip() for item in self.trusted_hosts.split(",") if item.strip()]
+
+    @cached_property
+    def admin_emails_list(self) -> set[str]:
+        return {item.strip().lower() for item in self.admin_emails.split(",") if item.strip()}
 
     @cached_property
     def cors_origins_list(self) -> list[str]:

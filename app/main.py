@@ -12,7 +12,7 @@ from app.services.openai_client import close_openai_client
 def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
-        version="1.7.0",
+        version="1.8.0",
         description="Sırra - Fal ve Astroloji API",
     )
 
@@ -40,7 +40,7 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health() -> dict:
-        return {"status": "ok", "environment": settings.environment, "version": "1.7.0"}
+        return {"status": "ok", "environment": settings.environment, "version": "1.8.0"}
 
     @app.on_event("shutdown")
     async def shutdown_event() -> None:

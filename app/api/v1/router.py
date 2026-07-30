@@ -1,8 +1,9 @@
 from fastapi import APIRouter
 
-from app.api.v1.routes import astrology, fortunes, profile, subscriptions, live_guide, audio
+from app.api.v1.routes import admin, astrology, fortunes, profile, subscriptions, live_guide, audio
 
 api_router = APIRouter()
+api_router.include_router(admin.router, prefix="/admin", tags=["admin"])
 api_router.include_router(profile.router, prefix="/profile", tags=["profile"])
 api_router.include_router(astrology.router, prefix="/astrology", tags=["astrology"])
 api_router.include_router(fortunes.router, prefix="/fortunes", tags=["fortunes"])

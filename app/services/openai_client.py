@@ -135,6 +135,178 @@ async def call_openai_responses(
     )
 
 
+
+async def call_openai_image_edit(
+    *,
+    image_bytes: bytes,
+    prompt: str,
+    error_code: str,
+    user_message: str,
+    output_format: str = "jpeg",
+    quality: str = "medium",
+    size: str = "1024x1024",
+    timeout_seconds: float = 120.0,
+) -> tuple[str, str]:
+    """Generate a new image from an uploaded reference image.
+
+    GPT Image models return base64 image data by default. The raw user image is
+    sent only for this request and is not written to the backend filesystem.
+    """
+    ensure_openai_configured(user_message=user_message)
+    client = _get_client()
+    retries = max(settings.openai_retries, 0)
+    mime_type = "image/jpeg" if output_format == "jpeg" else f"image/{output_format}"
+    last_exc: Exception | None = None
+
+    for attempt in range(retries + 1):
+        try:
+            response = await client.post(
+                "/images/edits",
+                headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+                data={
+                    "model": settings.openai_image_model,
+                    "prompt": prompt,
+                    "size": size,
+                    "quality": quality,
+                    "output_format": output_format,
+                },
+                files=[("image[]", ("selfie.jpg", image_bytes, "image/jpeg"))],
+                timeout=timeout_seconds,
+            )
+        except httpx.RequestError as exc:
+            last_exc = exc
+            if attempt >= retries:
+                raise AppError(
+                    error_code=f"{error_code}_NETWORK",
+                    user_message=user_message,
+                    developer_message=str(exc),
+                    status_code=503,
+                    retryable=True,
+                ) from exc
+            await asyncio.sleep(min(2.0, 0.45 * (2**attempt)) + random.random() * 0.15)
+            continue
+
+        if response.status_code < 400:
+            try:
+                payload = response.json()
+                image_data = ((payload.get("data") or [{}])[0] or {}).get("b64_json")
+                if not isinstance(image_data, str) or not image_data.strip():
+                    raise ValueError("Image response has no b64_json")
+                return image_data.strip(), mime_type
+            except (json.JSONDecodeError, ValueError, IndexError, TypeError) as exc:
+                raise AppError(
+                    error_code=f"{error_code}_BAD_RESPONSE",
+                    user_message=user_message,
+                    developer_message=f"{exc}: {response.text[:1200]}",
+                    status_code=502,
+                    retryable=True,
+                ) from exc
+
+        if response.status_code in _RETRYABLE_STATUS_CODES and attempt < retries:
+            await asyncio.sleep(min(2.5, 0.5 * (2**attempt)) + random.random() * 0.2)
+            continue
+
+        raise AppError(
+            error_code=f"{error_code}_RESPONSE",
+            user_message=user_message,
+            developer_message=_error_body(response),
+            status_code=502 if response.status_code >= 500 else 400,
+            retryable=response.status_code in _RETRYABLE_STATUS_CODES,
+        )
+
+    raise AppError(
+        error_code=f"{error_code}_NETWORK",
+        user_message=user_message,
+        developer_message=str(last_exc or "OpenAI image request failed"),
+        status_code=503,
+        retryable=True,
+    )
+
+async def call_openai_image_generate(
+    *,
+    prompt: str,
+    error_code: str,
+    user_message: str,
+    output_format: str = "jpeg",
+    quality: str = "medium",
+    size: str = "1024x1024",
+    timeout_seconds: float = 120.0,
+) -> tuple[str, str]:
+    """Generate a new image without copying an uploaded customer's face."""
+    ensure_openai_configured(user_message=user_message)
+    client = _get_client()
+    retries = max(settings.openai_retries, 0)
+    mime_type = "image/jpeg" if output_format == "jpeg" else f"image/{output_format}"
+    last_exc: Exception | None = None
+
+    for attempt in range(retries + 1):
+        try:
+            response = await client.post(
+                "/images/generations",
+                headers={
+                    "Authorization": f"Bearer {settings.openai_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": settings.openai_image_model,
+                    "prompt": prompt,
+                    "size": size,
+                    "quality": quality,
+                    "output_format": output_format,
+                    "n": 1,
+                },
+                timeout=timeout_seconds,
+            )
+        except httpx.RequestError as exc:
+            last_exc = exc
+            if attempt >= retries:
+                raise AppError(
+                    error_code=f"{error_code}_NETWORK",
+                    user_message=user_message,
+                    developer_message=str(exc),
+                    status_code=503,
+                    retryable=True,
+                ) from exc
+            await asyncio.sleep(min(2.0, 0.45 * (2**attempt)) + random.random() * 0.15)
+            continue
+
+        if response.status_code < 400:
+            try:
+                payload = response.json()
+                image_data = ((payload.get("data") or [{}])[0] or {}).get("b64_json")
+                if not isinstance(image_data, str) or not image_data.strip():
+                    raise ValueError("Image response has no b64_json")
+                return image_data.strip(), mime_type
+            except (json.JSONDecodeError, ValueError, IndexError, TypeError) as exc:
+                raise AppError(
+                    error_code=f"{error_code}_BAD_RESPONSE",
+                    user_message=user_message,
+                    developer_message=f"{exc}: {response.text[:1200]}",
+                    status_code=502,
+                    retryable=True,
+                ) from exc
+
+        if response.status_code in _RETRYABLE_STATUS_CODES and attempt < retries:
+            await asyncio.sleep(min(2.5, 0.5 * (2**attempt)) + random.random() * 0.2)
+            continue
+
+        raise AppError(
+            error_code=f"{error_code}_RESPONSE",
+            user_message=user_message,
+            developer_message=_error_body(response),
+            status_code=502 if response.status_code >= 500 else 400,
+            retryable=response.status_code in _RETRYABLE_STATUS_CODES,
+        )
+
+    raise AppError(
+        error_code=f"{error_code}_NETWORK",
+        user_message=user_message,
+        developer_message=str(last_exc or "OpenAI image request failed"),
+        status_code=503,
+        retryable=True,
+    )
+
+
 def extract_output_text(response_json: dict[str, Any], *, empty_error_code: str = "OPENAI_OUTPUT_EMPTY", user_message: str = "AI çıktısı boş geldi. Lütfen tekrar dene.") -> str:
     if isinstance(response_json.get("output_text"), str) and response_json["output_text"].strip():
         return response_json["output_text"].strip()

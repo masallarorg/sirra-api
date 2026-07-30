@@ -4,7 +4,7 @@ from uuid import uuid4
 
 from app.core.config import settings
 from app.core.errors import AppError
-from app.services.openai_client import call_openai_responses, extract_output_text as extract_openai_output_text, image_data_url
+from app.services.openai_client import call_openai_image_generate, call_openai_responses, extract_output_text as extract_openai_output_text, image_data_url
 from app.schemas.fortune import (
     CoffeeFortuneResult,
     DetectedSymbol,
@@ -298,9 +298,9 @@ async def generate_generic_fortune(request: GenericFortuneRequest) -> GenericFor
 async def generate_soulmate_fortune(*, user_id: str, profile: dict, image_bytes: bytes) -> GenericFortuneResult:
     """Create a safe symbolic soulmate portrait reading from one selfie.
 
-    This does not claim to identify a real person. It returns a symbolic fal
-    interpretation plus a portrait description that the mobile app can render as an
-    animated symbolic card.
+    This does not claim to identify a real person. The selfie informs only the
+    symbolic reading; a separate text-to-image request creates a newly invented
+    adult counterpart so the customer's face is not copied into the result.
     """
     if settings.mock_ai:
         request = GenericFortuneRequest(type_id="soulmate", focus=profile.get("focus") or "Aşk", payload={"theme": profile.get("theme") or "Gizemli portre", "selfie_added": True}, profile=profile)
@@ -367,8 +367,32 @@ async def generate_soulmate_fortune(*, user_id: str, profile: dict, image_bytes:
             status_code=502,
             retryable=True,
         ) from exc
+    symbols_hint = ", ".join(str(item) for item in (data.get("symbols") or [])[:6])
+    portrait_prompt = f"""
+Create a premium graphite pencil portrait on textured ivory paper of exactly one fictional adult romantic counterpart.
+This must be a newly invented person, not the customer from the uploaded selfie and not a copy or transformation of any real face.
+The selfie was used only upstream to understand the customer's requested mood; it is not an image reference for this generation.
+Draw a plausible compatible partner archetype with expressive eyes, natural adult anatomy, professional charcoal and graphite detail,
+subtle mystical light, clean ivory-paper background, no text, no logos, no frame, and no second person.
+Theme: {profile.get('theme') or 'Gizemli portre'}.
+Relationship focus: {profile.get('focus') or 'Aşk'}.
+Reading mood: {data.get('summary') or data.get('primary_message') or 'sakin, güven veren ve gizemli'}.
+Symbolic cues: {symbols_hint or 'ay ışığı, sakin bağ ve yeni başlangıç'}.
+The portrait is fictional entertainment and must not claim to identify a real current or future spouse.
+""".strip()
+    portrait_base64, portrait_mime_type = await call_openai_image_generate(
+        prompt=portrait_prompt,
+        error_code="OPENAI_SOULMATE_PORTRAIT",
+        user_message="Ruh eşi kara kalem portresi hazırlanırken sorun oluştu. Lütfen tekrar dene.",
+        output_format="jpeg",
+        quality="medium",
+        size="1024x1024",
+        timeout_seconds=120.0,
+    )
     data["fortune_id"] = data.get("fortune_id") or f"soulmate_{uuid4().hex[:10]}"
     data["type"] = "soulmate"
+    data["portrait_image_base64"] = portrait_base64
+    data["portrait_mime_type"] = portrait_mime_type
     return _augment_generic_result(GenericFortuneResult.model_validate(data), profile, profile.get("focus") or "Genel enerji")
 
 

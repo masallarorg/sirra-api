@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from app.core.config import settings
 from app.core.errors import AppError
@@ -50,6 +51,7 @@ class FortuneReservation:
     kind: str
     cost: int = 0
     date_key: str = ""
+    reservation_id: str = ""
     access_state: dict[str, Any] | None = None
 
 
@@ -296,6 +298,7 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
             kind="mock",
             cost=0,
             date_key=_today_key(),
+            reservation_id=f"mock_{uuid4().hex}",
             access_state={
                 "credits": 0,
                 "charged_credits": 0,
@@ -330,8 +333,10 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
 
     today = _today_key()
     cost = fortune_cost(fortune_type)
+    reservation_id = f"fr_{uuid4().hex}"
     sub_ref = db.collection("subscriptions").document(user_id)
     access_ref = db.collection("monetization").document(user_id)
+    reservation_ref = db.collection("fortune_access_reservations").document(reservation_id)
 
     transaction = db.transaction()
 
@@ -392,6 +397,23 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
             "premium_daily_credit_granted": premium_credit_granted,
         }
 
+        def record_reservation(kind: str, charged_cost: int, access_state: dict[str, Any]) -> None:
+            transaction.set(
+                reservation_ref,
+                {
+                    "reservation_id": reservation_id,
+                    "uid": user_id,
+                    "fortune_type": fortune_type,
+                    "kind": kind,
+                    "cost": charged_cost,
+                    "date_key": today,
+                    "status": "reserved",
+                    "access_state": access_state,
+                    "created_at": now,
+                    "updated_at": now,
+                },
+            )
+
         def state(
             *,
             access_kind: str,
@@ -447,7 +469,8 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
             transaction.set(access_ref, patch, merge=True)
             if active_devices_patch is not None:
                 transaction.set(sub_ref, {"active_devices": active_devices_patch, "updated_at": now}, merge=True)
-            return FortuneReservation(user_id=user_id, fortune_type=fortune_type, kind="premium_daily", cost=0, date_key=today, access_state=access_state)
+            record_reservation("premium_daily", 0, access_state)
+            return FortuneReservation(user_id=user_id, fortune_type=fortune_type, kind="premium_daily", cost=0, date_key=today, reservation_id=reservation_id, access_state=access_state)
 
         # Standart üyede ücretsiz günlük fal yoktur; standart kullanıcılar
         # her falı doğrudan kredi bakiyesinden kullanır.
@@ -478,7 +501,8 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
                 "last_access_message": premium_credit_notice,
             }
             transaction.set(access_ref, patch, merge=True)
-            return FortuneReservation(user_id=user_id, fortune_type=fortune_type, kind="credits", cost=cost, date_key=today, access_state=access_state)
+            record_reservation("credits", cost, access_state)
+            return FortuneReservation(user_id=user_id, fortune_type=fortune_type, kind="credits", cost=cost, date_key=today, reservation_id=reservation_id, access_state=access_state)
 
         premium_exhausted_prefix = ""
         raise AppError(
@@ -500,6 +524,7 @@ def _log_fortune_access_ledger(db, *, reservation: FortuneReservation, event_typ
         if charged <= 0 and reservation.kind != "credits":
             return
         payload = {
+            "reservation_id": reservation.reservation_id,
             "uid": reservation.user_id,
             "fortune_type": reservation.fortune_type,
             "event_type": event_type,
@@ -515,37 +540,120 @@ def _log_fortune_access_ledger(db, *, reservation: FortuneReservation, event_typ
         return
 
 
+async def commit_fortune_access(reservation: FortuneReservation) -> None:
+    """Mark a reservation completed without changing the reserved balance."""
+    if reservation.kind in {"mock", "none"} or not reservation.reservation_id:
+        return
+    try:
+        db = _firestore_client()
+        from firebase_admin import firestore
+
+        reservation_ref = db.collection("fortune_access_reservations").document(reservation.reservation_id)
+        transaction = db.transaction()
+
+        @firestore.transactional
+        def _commit(tx):
+            snapshot = reservation_ref.get(transaction=tx)
+            if not snapshot.exists:
+                return False
+            data = snapshot.to_dict() or {}
+            if data.get("status") != "reserved":
+                return False
+            tx.set(
+                reservation_ref,
+                {
+                    "status": "completed",
+                    "completed_at": datetime.now(UTC),
+                    "updated_at": datetime.now(UTC),
+                },
+                merge=True,
+            )
+            return True
+
+        _commit(transaction)
+    except Exception:
+        # The actual access change was already committed atomically. This marker
+        # is operational metadata and must not break a completed reading.
+        return
+
+
 async def refund_fortune_access(reservation: FortuneReservation) -> None:
+    """Idempotently refund a failed reading using one Firestore transaction."""
     if reservation.kind in {"mock", "none"} or (settings.mock_ai and settings.allow_mock_auth):
         return
     try:
         db = _firestore_client()
-        ref = db.collection("monetization").document(reservation.user_id)
-        snap = ref.get()
-        data = snap.to_dict() if snap.exists else {}
-        credits = latest_credit_balance(data, None, monetization_snapshot=snap, default=0)
-        premium_used = max(int(data.get("premium_used") or 0), int(data.get("premium_daily_used") or 0))
-        free_used = max(int(data.get("free_used") or 0), int(data.get("standard_free_daily_used") or 0))
-        now = datetime.now(UTC)
-        patch: dict[str, Any] = {"updated_at": now}
-        patch["authoritative_daily_state"] = True
-        patch["last_access_kind"] = f"refund_{reservation.kind}"
-        if reservation.kind == "credits":
-            patch["credits"] = credits + reservation.cost
-            patch["credits_updated_at"] = now
-        elif reservation.kind == "premium_daily":
-            patch["premium_used"] = max(0, premium_used - 1)
-            patch["premium_daily_used"] = patch["premium_used"]
-            patch["premium_daily_limit"] = PREMIUM_DAILY_LIMIT
-            patch["premium_daily_remaining"] = max(0, PREMIUM_DAILY_LIMIT - patch["premium_used"])
-            patch["premium_daily_exhausted"] = patch["premium_used"] >= PREMIUM_DAILY_LIMIT
-        elif reservation.kind == "standard_free":
-            patch["free_used"] = max(0, free_used - 1)
-            patch["standard_free_daily_used"] = patch["free_used"]
-        ref.set(patch, merge=True)
-        if "credits" in patch:
+        from firebase_admin import firestore
+
+        access_ref = db.collection("monetization").document(reservation.user_id)
+        reservation_ref = db.collection("fortune_access_reservations").document(reservation.reservation_id)
+        transaction = db.transaction()
+
+        @firestore.transactional
+        def _refund(tx):
+            reservation_snap = reservation_ref.get(transaction=tx) if reservation.reservation_id else None
+            if reservation_snap is not None and reservation_snap.exists:
+                reservation_data = reservation_snap.to_dict() or {}
+                if reservation_data.get("status") != "reserved":
+                    return None
+
+            access_snap = access_ref.get(transaction=tx)
+            data = access_snap.to_dict() if access_snap.exists else {}
+            credits = latest_credit_balance(data, None, monetization_snapshot=access_snap, default=0)
+            premium_used = max(int(data.get("premium_used") or 0), int(data.get("premium_daily_used") or 0))
+            free_used = max(int(data.get("free_used") or 0), int(data.get("standard_free_daily_used") or 0))
+            now = datetime.now(UTC)
+            patch: dict[str, Any] = {
+                "updated_at": now,
+                "authoritative_daily_state": True,
+                "last_access_kind": f"refund_{reservation.kind}",
+            }
+            if reservation.kind == "credits":
+                patch["credits"] = credits + reservation.cost
+                patch["credits_updated_at"] = now
+            elif reservation.kind == "premium_daily":
+                # Do not decrement today's counter when the failed reservation
+                # belongs to a previous daily window that has already reset.
+                if str(data.get("daily_date") or "") == reservation.date_key:
+                    patch["premium_used"] = max(0, premium_used - 1)
+                    patch["premium_daily_used"] = patch["premium_used"]
+                    patch["premium_daily_limit"] = PREMIUM_DAILY_LIMIT
+                    patch["premium_daily_remaining"] = max(0, PREMIUM_DAILY_LIMIT - patch["premium_used"])
+                    patch["premium_daily_exhausted"] = patch["premium_used"] >= PREMIUM_DAILY_LIMIT
+            elif reservation.kind == "standard_free":
+                if str(data.get("daily_date") or "") == reservation.date_key:
+                    patch["free_used"] = max(0, free_used - 1)
+                    patch["standard_free_daily_used"] = patch["free_used"]
+
+            tx.set(access_ref, patch, merge=True)
+            if reservation.reservation_id:
+                tx.set(
+                    reservation_ref,
+                    {
+                        "status": "refunded",
+                        "refunded_at": now,
+                        "updated_at": now,
+                    },
+                    merge=True,
+                )
+            return patch
+
+        patch = _refund(transaction)
+        if patch and "credits" in patch:
             refund_access = dict(reservation.access_state or {})
             refund_access["credits"] = patch["credits"]
-            _log_fortune_access_ledger(db, reservation=FortuneReservation(user_id=reservation.user_id, fortune_type=reservation.fortune_type, kind=reservation.kind, cost=reservation.cost, date_key=reservation.date_key, access_state=refund_access), event_type="refund")
+            _log_fortune_access_ledger(
+                db,
+                reservation=FortuneReservation(
+                    user_id=reservation.user_id,
+                    fortune_type=reservation.fortune_type,
+                    kind=reservation.kind,
+                    cost=reservation.cost,
+                    date_key=reservation.date_key,
+                    reservation_id=reservation.reservation_id,
+                    access_state=refund_access,
+                ),
+                event_type="refund",
+            )
     except Exception:
         return

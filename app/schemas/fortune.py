@@ -161,6 +161,8 @@ class GenericFortuneResult(BaseModel):
     personal_insights: list[PersonalInsight] = Field(default_factory=list)
     story_cards: list[ShareCard] = Field(default_factory=list)
     daily_ritual_prompt: str = ""
+    portrait_image_base64: str | None = None
+    portrait_mime_type: str | None = None
 
 
 class GenericFortuneResponse(BaseModel):
