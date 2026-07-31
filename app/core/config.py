@@ -1,4 +1,6 @@
 from functools import cached_property
+from urllib.parse import unquote, urlparse
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,11 +18,11 @@ class Settings(BaseSettings):
     openai_request_timeout_seconds: float = 70.0
     openai_retries: int = 2
     google_tts_enabled: bool = True
-    google_tts_language_code: str = 'tr-TR'
-    google_tts_voice_name: str = 'tr-TR-Chirp3-HD-Aoede'
+    google_tts_language_code: str = "tr-TR"
+    google_tts_voice_name: str = "tr-TR-Chirp3-HD-Aoede"
     speech_fallback_enabled: bool = True
-    speech_model: str = 'gpt-4o-mini-tts'
-    speech_voice: str = 'marin'
+    speech_model: str = "gpt-4o-mini-tts"
+    speech_voice: str = "marin"
     firebase_credentials_path: str | None = None
     cors_origins: str = "*"
     cors_allow_credentials: bool = False
@@ -37,14 +39,16 @@ class Settings(BaseSettings):
     admob_ssv_keys_url: str = "https://www.gstatic.com/admob/reward/verifier-keys.json"
     admob_ssv_max_age_seconds: int = 86400
     admin_emails: str = ""
-    storage_provider: str = "r2"
-    r2_enabled: bool = False
-    r2_account_id: str | None = None
-    r2_access_key_id: str | None = None
-    r2_secret_access_key: str | None = None
-    r2_bucket_name: str | None = None
-    r2_public_base_url: str | None = None
-    r2_presigned_url_ttl_seconds: int = 3600
+
+    # Card-free media storage. Cloudinary's Free plan can be used without a
+    # payment card, subject to the account's free usage quota.
+    storage_provider: str = "cloudinary"
+    cloudinary_enabled: bool = True
+    cloudinary_url: str | None = None
+    cloudinary_cloud_name: str | None = None
+    cloudinary_api_key: str | None = None
+    cloudinary_api_secret: str | None = None
+    cloudinary_folder_root: str = "sirra"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
@@ -58,21 +62,36 @@ class Settings(BaseSettings):
     def admin_emails_list(self) -> set[str]:
         return {item.strip().lower() for item in self.admin_emails.split(",") if item.strip()}
 
-    @cached_property
-    def r2_configured(self) -> bool:
-        return bool(
-            self.r2_enabled
-            and self.r2_account_id
-            and self.r2_access_key_id
-            and self.r2_secret_access_key
-            and self.r2_bucket_name
-        )
+    @property
+    def cloudinary_credentials(self) -> tuple[str, str, str] | None:
+        """Return (cloud_name, api_key, api_secret) from separate vars or URL.
 
-    @cached_property
-    def r2_endpoint_url(self) -> str | None:
-        if not self.r2_account_id:
+        Cloudinary exposes a single CLOUDINARY_URL value in the form:
+        cloudinary://API_KEY:API_SECRET@CLOUD_NAME
+        Separate environment variables remain supported for easier rotation.
+        """
+        cloud_name = str(self.cloudinary_cloud_name or "").strip()
+        api_key = str(self.cloudinary_api_key or "").strip()
+        api_secret = str(self.cloudinary_api_secret or "").strip()
+        if cloud_name and api_key and api_secret:
+            return cloud_name, api_key, api_secret
+
+        raw_url = str(self.cloudinary_url or "").strip()
+        if not raw_url:
             return None
-        return f"https://{self.r2_account_id}.r2.cloudflarestorage.com"
+        parsed = urlparse(raw_url)
+        if parsed.scheme.lower() != "cloudinary" or not parsed.hostname:
+            return None
+        parsed_key = unquote(parsed.username or "").strip()
+        parsed_secret = unquote(parsed.password or "").strip()
+        parsed_cloud = unquote(parsed.hostname or "").strip()
+        if not (parsed_cloud and parsed_key and parsed_secret):
+            return None
+        return parsed_cloud, parsed_key, parsed_secret
+
+    @property
+    def cloudinary_configured(self) -> bool:
+        return bool(self.cloudinary_enabled and self.cloudinary_credentials)
 
     @cached_property
     def cors_origins_list(self) -> list[str]:

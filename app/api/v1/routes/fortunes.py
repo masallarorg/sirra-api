@@ -43,10 +43,10 @@ async def _persist_generated_portrait(*, user_id: str, result) -> None:
         if stored is not None:
             result.portrait_image_url = stored.url
             result.portrait_storage_key = stored.key
-            # Keep large image bytes out of the API response when R2 persisted it.
+            # Keep large image bytes out of the API response when Cloudinary persisted it.
             result.portrait_image_base64 = None
     except Exception:
-        # R2 is a best-effort persistence layer; local base64 fallback remains.
+        # Cloudinary is a best-effort persistence layer; local base64 fallback remains.
         return
 
 

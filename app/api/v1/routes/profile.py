@@ -534,8 +534,8 @@ async def delete_my_account(current_user: CurrentUser = Depends(require_current_
 
             delete_user_media(uid)
         except Exception as exc:
-            # R2 cleanup is best-effort and must not block account deletion.
-            logger.warning("account delete R2 cleanup skipped uid=%s: %s", uid, exc)
+            # Cloudinary cleanup is best-effort and must not block account deletion.
+            logger.warning("account delete Cloudinary cleanup skipped uid=%s: %s", uid, exc)
 
         from firebase_admin import auth
 
