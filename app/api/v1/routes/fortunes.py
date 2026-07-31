@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import logging
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -20,6 +21,7 @@ from app.services.sirra_compass import build_sirra_compass, record_fortune_feedb
 from app.services.object_storage import upload_user_bytes
 
 router = APIRouter()
+logger = logging.getLogger("uvicorn.error")
 
 
 async def _persist_generated_portrait(*, user_id: str, result) -> None:
@@ -45,8 +47,9 @@ async def _persist_generated_portrait(*, user_id: str, result) -> None:
             result.portrait_storage_key = stored.key
             # Keep large image bytes out of the API response when Cloudinary persisted it.
             result.portrait_image_base64 = None
-    except Exception:
+    except Exception as exc:
         # Cloudinary is a best-effort persistence layer; local base64 fallback remains.
+        logger.warning("Cloudinary portrait persistence skipped uid=%s fortune_id=%s error=%s", user_id, getattr(result, "fortune_id", "unknown"), type(exc).__name__)
         return
 
 

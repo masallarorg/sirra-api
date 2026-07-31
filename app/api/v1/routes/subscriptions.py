@@ -21,6 +21,7 @@ from app.services.monetization_guard import (
     WELCOME_CREDITS,
     _is_subscription_active,
     _subscription_expires_at,
+    _subscription_has_lifetime_access,
     latest_credit_balance,
 )
 

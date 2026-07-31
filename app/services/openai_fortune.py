@@ -1,10 +1,18 @@
+import base64
+import hashlib
+import io
 import json
+import logging
+import random
 from uuid import uuid4
 
 
 from app.core.config import settings
 from app.core.errors import AppError
 from app.services.openai_client import call_openai_image_generate, call_openai_responses, extract_output_text as extract_openai_output_text, image_data_url
+logger = logging.getLogger("uvicorn.error")
+
+
 from app.schemas.fortune import (
     CoffeeFortuneResult,
     DetectedSymbol,
@@ -295,106 +303,286 @@ async def generate_generic_fortune(request: GenericFortuneRequest) -> GenericFor
     return _augment_generic_result(GenericFortuneResult.model_validate(data), profile, focus)
 
 
-async def generate_soulmate_fortune(*, user_id: str, profile: dict, image_bytes: bytes) -> GenericFortuneResult:
-    """Create a safe symbolic soulmate portrait reading from one selfie.
-
-    This does not claim to identify a real person. The selfie informs only the
-    symbolic reading; a separate text-to-image request creates a newly invented
-    adult counterpart so the customer's face is not copied into the result.
-    """
-    if settings.mock_ai:
-        request = GenericFortuneRequest(type_id="soulmate", focus=profile.get("focus") or "Aşk", payload={"theme": profile.get("theme") or "Gizemli portre", "selfie_added": True}, profile=profile)
-        result = _mock_generic_result(type_id="soulmate", request=request)
-        result.title = "Ruh Eşi Portresi"
-        result.symbols = ["isim_enerjisi", "portre", "kalp", "zaman"]
-        result.sections[0].title = "İsim enerjisi"
-        result.sections[0].text = "İsim enerjisi A, M veya S harflerinde yoğunlaşıyor; bu kesin bir kimlik değil, sembolik bir izdir."
-        result.sections[1].title = "Sembolik portre"
-        result.sections[1].text = "Bakışları sakin, gece tonlarında ve güçlü sezgi taşıyan bir portre enerjisi öne çıkıyor."
-        return _augment_generic_result(result, profile, profile.get("focus") or "Aşk")
-
-    if not settings.openai_api_key:
-        raise AppError(
-            error_code="OPENAI_API_KEY_MISSING",
-            user_message="Ruh eşi portresi şu anda hazırlanamadı. Lütfen biraz sonra tekrar dene.",
-            developer_message="OPENAI_API_KEY is not configured",
-            status_code=503,
-            retryable=True,
-        )
-
-    input_content = [
-        {
-            "type": "input_text",
-            "text": json.dumps(
-                {
-                    "request_id": f"soulmate_{uuid4().hex[:12]}",
-                    "user_id_hash_hint": user_id[-8:],
-                    "profile": profile,
-                    "rules": [
-                        "Gerçek ruh eşinin kimliği veya gerçek bir kişi iddiası üretme; sembolik portre ve isim enerjisi dili kullan.",
-                        "Selfieyi yalnızca genel stil, enerji ve sembolik portre tonu için kullan; kimlik, yaş, etnik köken, hassas özellik veya gerçek kişi benzerliği çıkarımı yapma.",
-                        "Cinsel veya uygunsuz içerik üretme. Romantik ama güvenli ve saygılı kal.",
-                        "İsim enerjisi için 2-3 olası harf ver; kesin isim iddiası kurma.",
-                        "Sections içinde mutlaka: İsim enerjisi, Sembolik portre, Karşılaşma enerjisi, Dikkat edilmesi gereken tema başlıkları olsun.",
-                        "primary_message içinde kesin kimlik iddiası olmadığını doğal bir dille belirt.",
-                    ],
-                },
-                ensure_ascii=False,
-            ),
-        },
-        {"type": "input_image", "image_url": image_data_url(image_bytes)},
-    ]
-    payload = {
-        "model": settings.vision_model,
-        "instructions": _generic_fortune_developer_instructions("soulmate"),
-        "input": [{"role": "user", "content": input_content}],
-        "text": {"format": {"type": "json_schema", "name": "soulmate_fortune", "strict": True, "schema": _generic_fortune_json_schema()}},
-    }
-    response_json = await call_openai_responses(
-        payload,
-        error_code="OPENAI_SOULMATE",
-        user_message="Ruh eşi portresi hazırlanırken sorun oluştu. Lütfen tekrar dene.",
-        timeout_seconds=130.0,
+def _fallback_soulmate_result(*, profile: dict) -> GenericFortuneResult:
+    focus = str(profile.get("focus") or "Aşk").strip() or "Aşk"
+    theme = str(profile.get("theme") or "Gizemli portre").strip() or "Gizemli portre"
+    request = GenericFortuneRequest(
+        type_id="soulmate",
+        focus=focus,
+        payload={"theme": theme, "selfie_added": True},
+        profile=profile,
     )
-    content = _extract_output_text(response_json)
-    try:
-        data = json.loads(content)
-    except json.JSONDecodeError as exc:
-        raise AppError(
-            error_code="OPENAI_SOULMATE_JSON_INVALID",
-            user_message="Ruh eşi portresi beklenen formatta gelmedi. Lütfen tekrar dene.",
-            developer_message=f"{exc}: {content[:1200]}",
-            status_code=502,
-            retryable=True,
-        ) from exc
-    symbols_hint = ", ".join(str(item) for item in (data.get("symbols") or [])[:6])
+    result = _mock_generic_result(type_id="soulmate", request=request)
+    result.title = "Ruh Eşi Portresi"
+    result.summary = (
+        "Sembolik eş enerjisinde sakin bakış, güven veren iletişim ve yavaş ama kalıcı yakınlaşma teması öne çıkıyor."
+    )
+    result.primary_message = (
+        "Bu portre gerçek bir kişinin kimliğini tespit etmez; ilişki odağından üretilmiş kurgusal ve sembolik bir eş arketipidir."
+    )
+    result.symbols = ["ay_isigi", "sakin_bakis", "guven", "mesaj", "yeni_baslangic"]
+    result.sections = [
+        FortuneDetailBlock(
+            title="İsim enerjisi",
+            text="A, M ve S harfleri çevresinde bir isim, yer veya mesaj izi beliriyor; bu kesin isim değil, sembolik bir işarettir.",
+        ),
+        FortuneDetailBlock(
+            title="Sembolik portre",
+            text="Duru bakışlı, sakin ama güçlü karakterli, ilk anda mesafeli; güven oluştuğunda koruyucu ve açık iletişim kuran bir arketip görünür.",
+        ),
+        FortuneDetailBlock(
+            title="Karşılaşma enerjisi",
+            text="Gündelik bir iş, kısa yol, ortak çevre ya da beklenmedik bir mesaj üzerinden gelişen tanışma olasılığı güçleniyor.",
+        ),
+        FortuneDetailBlock(
+            title="Dikkat edilmesi gereken tema",
+            text="Hızlı kesinlik aramak yerine davranış tutarlılığına bakmak ve duygusal sınırlarını net tutmak bu dönemde daha koruyucu.",
+        ),
+    ]
+    return result
+
+
+def _local_graphite_soulmate_portrait(*, user_id: str, profile: dict, reading: GenericFortuneResult) -> tuple[str, str]:
+    """Create a deterministic local graphite-style fallback portrait.
+
+    The drawing is deliberately fictional and does not copy or infer the face in
+    the uploaded selfie. It keeps the soulmate endpoint usable when the remote
+    image-generation service is temporarily unavailable.
+    """
+    from PIL import Image, ImageDraw, ImageFilter, ImageOps
+
+    seed_source = "|".join(
+        [
+            user_id,
+            str(profile.get("focus") or "Aşk"),
+            str(profile.get("theme") or "Gizemli portre"),
+            reading.summary,
+        ]
+    )
+    seed = int(hashlib.sha256(seed_source.encode("utf-8")).hexdigest()[:16], 16)
+    rng = random.Random(seed)
+    size = 768
+
+    paper = Image.new("RGB", (size, size), (246, 242, 232))
+    noise = Image.effect_noise((size, size), 18).convert("L")
+    noise = ImageOps.colorize(noise, black=(218, 213, 202), white=(255, 253, 247))
+    paper = Image.blend(paper, noise, 0.16)
+
+    shade = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    shade_draw = ImageDraw.Draw(shade)
+    cx = size // 2 + rng.randint(-18, 18)
+    face_top = 138 + rng.randint(-8, 12)
+    face_w = 286 + rng.randint(-18, 22)
+    face_h = 380 + rng.randint(-12, 26)
+    face_box = (cx - face_w // 2, face_top, cx + face_w // 2, face_top + face_h)
+
+    # Soft graphite shadows beneath hair, cheekbones, jaw and shoulders.
+    shade_draw.ellipse((face_box[0] - 22, face_box[1] - 30, face_box[2] + 22, face_box[3] + 14), fill=(20, 20, 20, 28))
+    shade_draw.ellipse((face_box[0] + 24, face_box[1] + 110, cx + 4, face_box[3] - 44), fill=(30, 30, 30, 28))
+    shade_draw.ellipse((cx - 4, face_box[1] + 126, face_box[2] - 20, face_box[3] - 58), fill=(30, 30, 30, 20))
+    shade_draw.ellipse((cx - 250, face_box[3] - 10, cx + 250, size + 150), fill=(20, 20, 20, 34))
+    shade = shade.filter(ImageFilter.GaussianBlur(24))
+    paper = Image.alpha_composite(paper.convert("RGBA"), shade)
+
+    draw = ImageDraw.Draw(paper)
+    graphite = (55, 53, 50, 255)
+    mid = (100, 96, 90, 255)
+    light = (220, 215, 205, 255)
+
+    # Shoulders and neck.
+    neck_w = 88 + rng.randint(-8, 12)
+    neck_top = face_box[3] - 42
+    draw.line((cx - neck_w // 2, neck_top, cx - neck_w // 2 - 8, neck_top + 120), fill=mid, width=4)
+    draw.line((cx + neck_w // 2, neck_top, cx + neck_w // 2 + 8, neck_top + 120), fill=mid, width=4)
+    draw.arc((cx - 300, face_box[3] + 32, cx + 300, size + 220), 198, 342, fill=graphite, width=6)
+    draw.arc((cx - 258, face_box[3] + 72, cx + 258, size + 180), 202, 338, fill=mid, width=3)
+
+    # Face outline and ears.
+    draw.ellipse(face_box, fill=(232, 227, 217, 255), outline=graphite, width=5)
+    ear_h = 94
+    ear_y = face_top + face_h // 2 - ear_h // 2
+    draw.arc((face_box[0] - 24, ear_y, face_box[0] + 22, ear_y + ear_h), 78, 282, fill=mid, width=4)
+    draw.arc((face_box[2] - 22, ear_y, face_box[2] + 24, ear_y + ear_h), 258, 102, fill=mid, width=4)
+
+    # Hair varies deterministically between short, wavy and shoulder-length.
+    hair_style = seed % 3
+    hair_layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    hd = ImageDraw.Draw(hair_layer)
+    if hair_style == 0:
+        hd.pieslice((face_box[0] - 26, face_top - 68, face_box[2] + 28, face_top + 172), 178, 362, fill=(48, 46, 44, 225))
+        hd.polygon([(face_box[0] - 6, face_top + 38), (cx - 62, face_top - 16), (cx - 10, face_top + 54), (cx + 52, face_top - 12), (face_box[2] + 8, face_top + 46), (face_box[2] - 4, face_top - 12), (face_box[0] + 8, face_top - 8)], fill=(52, 50, 47, 235))
+    elif hair_style == 1:
+        hd.ellipse((face_box[0] - 48, face_top - 54, face_box[2] + 46, face_box[3] + 62), fill=(56, 53, 50, 210))
+        hd.ellipse((face_box[0] + 18, face_top + 12, face_box[2] - 18, face_box[3] + 10), fill=(0, 0, 0, 0))
+        for i in range(11):
+            x = face_box[0] - 24 + i * (face_w + 48) / 10
+            hd.arc((x - 26, face_top - 12, x + 42, face_box[3] + 52), 84, 276, fill=(32, 31, 30, 170), width=5)
+    else:
+        hd.ellipse((face_box[0] - 38, face_top - 62, face_box[2] + 38, face_top + 180), fill=(45, 43, 41, 232))
+        hd.polygon([(face_box[0] - 28, face_top + 80), (face_box[0] + 34, face_box[3] + 126), (cx - 92, face_box[3] + 54), (cx - 48, face_top + 30)], fill=(48, 46, 44, 220))
+        hd.polygon([(face_box[2] + 28, face_top + 80), (face_box[2] - 34, face_box[3] + 126), (cx + 92, face_box[3] + 54), (cx + 48, face_top + 30)], fill=(48, 46, 44, 220))
+    hair_layer = hair_layer.filter(ImageFilter.GaussianBlur(1.0))
+    paper = Image.alpha_composite(paper, hair_layer)
+    draw = ImageDraw.Draw(paper)
+
+    # Eyes, brows and facial structure.
+    eye_y = face_top + 158 + rng.randint(-5, 5)
+    eye_gap = 62 + rng.randint(-4, 6)
+    eye_w = 48 + rng.randint(-4, 5)
+    for side in (-1, 1):
+        ex = cx + side * eye_gap
+        draw.arc((ex - eye_w, eye_y - 18, ex + eye_w, eye_y + 24), 195, 345, fill=graphite, width=4)
+        draw.ellipse((ex - 8, eye_y - 2, ex + 8, eye_y + 14), fill=(58, 56, 53, 255))
+        draw.ellipse((ex - 3, eye_y + 2, ex + 3, eye_y + 8), fill=(20, 20, 20, 255))
+        brow_y = eye_y - 34 + rng.randint(-2, 3)
+        draw.arc((ex - eye_w - 4, brow_y - 10, ex + eye_w + 2, brow_y + 18), 196, 340, fill=graphite, width=5)
+
+    nose_top = eye_y + 12
+    nose_bottom = face_top + 258 + rng.randint(-4, 8)
+    draw.line((cx - 2, nose_top, cx - 12, nose_bottom - 10), fill=mid, width=3)
+    draw.arc((cx - 28, nose_bottom - 18, cx + 30, nose_bottom + 20), 24, 156, fill=mid, width=3)
+
+    mouth_y = face_top + 304 + rng.randint(-4, 7)
+    mouth_w = 66 + rng.randint(-6, 12)
+    draw.arc((cx - mouth_w, mouth_y - 18, cx + mouth_w, mouth_y + 22), 202, 338, fill=graphite, width=3)
+    draw.arc((cx - mouth_w + 10, mouth_y - 2, cx + mouth_w - 10, mouth_y + 30), 20, 160, fill=mid, width=2)
+    draw.arc((cx - 72, face_box[3] - 92, cx + 72, face_box[3] - 20), 18, 162, fill=light, width=3)
+
+    # Fine graphite hatching and paper grain around the silhouette.
+    stroke_layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(stroke_layer)
+    for _ in range(1250):
+        angle_bias = rng.choice((-1, 1))
+        x = rng.randint(max(20, face_box[0] - 90), min(size - 20, face_box[2] + 90))
+        y = rng.randint(max(20, face_top - 90), min(size - 20, face_box[3] + 150))
+        length = rng.randint(5, 24)
+        alpha = rng.randint(8, 28)
+        sd.line((x, y, x + angle_bias * length, y + rng.randint(2, 14)), fill=(35, 34, 32, alpha), width=1)
+    stroke_layer = stroke_layer.filter(ImageFilter.GaussianBlur(0.25))
+    paper = Image.alpha_composite(paper, stroke_layer).convert("RGB")
+    paper = paper.filter(ImageFilter.UnsharpMask(radius=1.4, percent=115, threshold=3))
+
+    output = io.BytesIO()
+    paper.save(output, format="JPEG", quality=88, optimize=True, progressive=True)
+    return base64.b64encode(output.getvalue()).decode("ascii"), "image/jpeg"
+
+
+async def generate_soulmate_fortune(*, user_id: str, profile: dict, image_bytes: bytes) -> GenericFortuneResult:
+    """Create a symbolic fictional counterpart portrait from one selfie.
+
+    Remote analysis and image generation are preferred. A local deterministic
+    graphite portrait is returned when either remote stage is unavailable, so a
+    temporary upstream error never turns the whole interpretation into HTTP 502.
+    """
+    safe_profile = profile if isinstance(profile, dict) else {}
+    focus = str(safe_profile.get("focus") or "Aşk").strip() or "Aşk"
+    result: GenericFortuneResult | None = None
+
+    if settings.mock_ai or not settings.openai_api_key:
+        if not settings.mock_ai:
+            logger.warning("Soulmate remote analysis skipped: OPENAI_API_KEY is not configured; using local fallback")
+        result = _fallback_soulmate_result(profile=safe_profile)
+    else:
+        input_content = [
+            {
+                "type": "input_text",
+                "text": json.dumps(
+                    {
+                        "request_id": f"soulmate_{uuid4().hex[:12]}",
+                        "user_id_hash_hint": user_id[-8:],
+                        "profile": safe_profile,
+                        "rules": [
+                            "Gerçek ruh eşinin kimliği veya gerçek bir kişi iddiası üretme; sembolik portre ve isim enerjisi dili kullan.",
+                            "Selfieyi yalnızca genel stil, enerji ve sembolik portre tonu için kullan; kimlik, yaş, etnik köken, hassas özellik veya gerçek kişi benzerliği çıkarımı yapma.",
+                            "Cinsel veya uygunsuz içerik üretme. Romantik ama güvenli ve saygılı kal.",
+                            "İsim enerjisi için 2-3 olası harf ver; kesin isim iddiası kurma.",
+                            "Sections içinde mutlaka: İsim enerjisi, Sembolik portre, Karşılaşma enerjisi, Dikkat edilmesi gereken tema başlıkları olsun.",
+                            "primary_message içinde kesin kimlik iddiası olmadığını doğal bir dille belirt.",
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+            {"type": "input_image", "image_url": image_data_url(image_bytes)},
+        ]
+        payload = {
+            "model": settings.vision_model,
+            "instructions": _generic_fortune_developer_instructions("soulmate"),
+            "input": [{"role": "user", "content": input_content}],
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "soulmate_fortune",
+                    "strict": True,
+                    "schema": _generic_fortune_json_schema(),
+                }
+            },
+        }
+        try:
+            response_json = await call_openai_responses(
+                payload,
+                error_code="OPENAI_SOULMATE",
+                user_message="Ruh eşi portresi hazırlanırken sorun oluştu. Lütfen tekrar dene.",
+                timeout_seconds=150.0,
+            )
+            content = _extract_output_text(response_json)
+            data = json.loads(content)
+            data["fortune_id"] = data.get("fortune_id") or f"soulmate_{uuid4().hex[:10]}"
+            data["type"] = "soulmate"
+            result = GenericFortuneResult.model_validate(data)
+        except Exception as exc:
+            error_code = getattr(exc, "error_code", type(exc).__name__)
+            logger.warning("Soulmate analysis fallback activated code=%s", error_code)
+            result = _fallback_soulmate_result(profile=safe_profile)
+
+    assert result is not None
+    symbols_hint = ", ".join(str(item) for item in result.symbols[:6])
     portrait_prompt = f"""
 Create a premium graphite pencil portrait on textured ivory paper of exactly one fictional adult romantic counterpart.
 This must be a newly invented person, not the customer from the uploaded selfie and not a copy or transformation of any real face.
 The selfie was used only upstream to understand the customer's requested mood; it is not an image reference for this generation.
 Draw a plausible compatible partner archetype with expressive eyes, natural adult anatomy, professional charcoal and graphite detail,
 subtle mystical light, clean ivory-paper background, no text, no logos, no frame, and no second person.
-Theme: {profile.get('theme') or 'Gizemli portre'}.
-Relationship focus: {profile.get('focus') or 'Aşk'}.
-Reading mood: {data.get('summary') or data.get('primary_message') or 'sakin, güven veren ve gizemli'}.
+Theme: {safe_profile.get('theme') or 'Gizemli portre'}.
+Relationship focus: {focus}.
+Reading mood: {result.summary or result.primary_message or 'sakin, güven veren ve gizemli'}.
 Symbolic cues: {symbols_hint or 'ay ışığı, sakin bağ ve yeni başlangıç'}.
 The portrait is fictional entertainment and must not claim to identify a real current or future spouse.
 """.strip()
-    portrait_base64, portrait_mime_type = await call_openai_image_generate(
-        prompt=portrait_prompt,
-        error_code="OPENAI_SOULMATE_PORTRAIT",
-        user_message="Ruh eşi kara kalem portresi hazırlanırken sorun oluştu. Lütfen tekrar dene.",
-        output_format="jpeg",
-        quality="medium",
-        size="1024x1024",
-        timeout_seconds=120.0,
-    )
-    data["fortune_id"] = data.get("fortune_id") or f"soulmate_{uuid4().hex[:10]}"
-    data["type"] = "soulmate"
-    data["portrait_image_base64"] = portrait_base64
-    data["portrait_mime_type"] = portrait_mime_type
-    return _augment_generic_result(GenericFortuneResult.model_validate(data), profile, profile.get("focus") or "Genel enerji")
 
+    portrait_base64: str
+    portrait_mime_type: str
+    if settings.mock_ai or not settings.openai_api_key:
+        portrait_base64, portrait_mime_type = _local_graphite_soulmate_portrait(
+            user_id=user_id,
+            profile=safe_profile,
+            reading=result,
+        )
+    else:
+        try:
+            portrait_base64, portrait_mime_type = await call_openai_image_generate(
+                prompt=portrait_prompt,
+                error_code="OPENAI_SOULMATE_PORTRAIT",
+                user_message="Ruh eşi kara kalem portresi hazırlanırken sorun oluştu. Lütfen tekrar dene.",
+                output_format="jpeg",
+                quality="medium",
+                size="1024x1024",
+                timeout_seconds=180.0,
+            )
+        except Exception as exc:
+            error_code = getattr(exc, "error_code", type(exc).__name__)
+            logger.warning("Soulmate portrait local fallback activated code=%s", error_code)
+            portrait_base64, portrait_mime_type = _local_graphite_soulmate_portrait(
+                user_id=user_id,
+                profile=safe_profile,
+                reading=result,
+            )
+
+    result.fortune_id = result.fortune_id or f"soulmate_{uuid4().hex[:10]}"
+    result.type = "soulmate"
+    result.portrait_image_base64 = portrait_base64
+    result.portrait_mime_type = portrait_mime_type
+    return _augment_generic_result(result, safe_profile, focus)
 
 
 async def generate_palm_fortune(*, user_id: str, profile: dict, right_image_bytes: bytes, left_image_bytes: bytes) -> GenericFortuneResult:
