@@ -1,3 +1,5 @@
+import asyncio
+import base64
 import json
 from datetime import UTC, datetime
 from typing import Annotated
@@ -15,9 +17,37 @@ from app.services.image_validation import prepare_openai_image
 from app.services.personal_memory import enrich_profile_with_memory, store_fortune_memory
 from app.services.push_notifications import notify_fortune_ready
 from app.services.sirra_compass import build_sirra_compass, record_fortune_feedback
+from app.services.object_storage import upload_user_bytes
 
 router = APIRouter()
 
+
+async def _persist_generated_portrait(*, user_id: str, result) -> None:
+    encoded = str(getattr(result, "portrait_image_base64", None) or "").strip()
+    if not encoded:
+        return
+    try:
+        image_bytes = base64.b64decode(encoded, validate=True)
+        mime_type = str(getattr(result, "portrait_mime_type", None) or "image/jpeg")
+        extension = "png" if "png" in mime_type.lower() else "jpg"
+        stored = await asyncio.to_thread(
+            upload_user_bytes,
+            user_id=user_id,
+            category="soulmate_portraits",
+            object_id=str(result.fortune_id),
+            data=image_bytes,
+            content_type=mime_type,
+            extension=extension,
+            cache_control="private, max-age=86400",
+        )
+        if stored is not None:
+            result.portrait_image_url = stored.url
+            result.portrait_storage_key = stored.key
+            # Keep large image bytes out of the API response when R2 persisted it.
+            result.portrait_image_base64 = None
+    except Exception:
+        # R2 is a best-effort persistence layer; local base64 fallback remains.
+        return
 
 
 
@@ -55,7 +85,7 @@ async def generate_fortune(request: GenericFortuneRequest, current_user: Current
         )
         await _save_generic_history(user_id=current_user.uid, result=result, request=request)
         await store_fortune_memory(user_id=current_user.uid, fortune_id=result.fortune_id, fortune_type=result.type, symbols=result.symbols, summary=result.summary, focus=request.focus)
-        await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="Fal yorumun")
+        await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="Fal yorumun", fortune_type=request.type_id)
         await commit_fortune_access(reservation)
         return GenericFortuneResponse(fortune_id=result.fortune_id, status="completed", result=result, access=reservation.access_state)
     except Exception:
@@ -110,7 +140,7 @@ async def coffee_fortune(
         )
         await _save_coffee_history(user_id=current_user.uid, result=result, profile=profile)
         await store_fortune_memory(user_id=current_user.uid, fortune_id=result.fortune_id, fortune_type="coffee", symbols=[symbol.symbol for symbol in result.detected_symbols], summary=result.summary, focus=profile.get("focus"))
-        await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="Kahve falın")
+        await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="Kahve falın", fortune_type="coffee")
         await commit_fortune_access(reservation)
 
         return CoffeeFortuneResponse(
@@ -175,7 +205,7 @@ async def palm_fortune(
         )
         await _save_generic_history(user_id=current_user.uid, result=result, request=request)
         await store_fortune_memory(user_id=current_user.uid, fortune_id=result.fortune_id, fortune_type=result.type, symbols=result.symbols, summary=result.summary, focus=focus)
-        await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="Fal yorumun")
+        await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="El falın", fortune_type="palm")
         await commit_fortune_access(reservation)
         return GenericFortuneResponse(fortune_id=result.fortune_id, status="completed", result=result, access=reservation.access_state)
     except Exception:
@@ -211,6 +241,7 @@ async def soulmate_fortune(
     reservation = await reserve_fortune_access(user_id=current_user.uid, fortune_type="soulmate", device_id=current_user.device_id)
     try:
         result = await generate_soulmate_fortune(user_id=current_user.uid, profile=profile, image_bytes=data)
+        await _persist_generated_portrait(user_id=current_user.uid, result=result)
         result.cross_fortune_connections = await find_cross_fortune_connections(
             user_id=current_user.uid,
             new_symbols=result.symbols,
@@ -218,7 +249,7 @@ async def soulmate_fortune(
         request = GenericFortuneRequest(type_id="soulmate", focus=focus, payload={"theme": theme, "selfie_added": True}, profile=profile)
         await _save_generic_history(user_id=current_user.uid, result=result, request=request)
         await store_fortune_memory(user_id=current_user.uid, fortune_id=result.fortune_id, fortune_type=result.type, symbols=result.symbols, summary=result.summary, focus=focus)
-        await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="Fal yorumun")
+        await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="Ruh eşi portren", fortune_type="soulmate")
         await commit_fortune_access(reservation)
         return GenericFortuneResponse(fortune_id=result.fortune_id, status="completed", result=result, access=reservation.access_state)
     except Exception:
@@ -238,7 +269,7 @@ async def dream_fortune(request: DreamFortuneRequest, current_user: CurrentUser 
             new_symbols=result.symbols,
         )
         await store_fortune_memory(user_id=current_user.uid, fortune_id=result.fortune_id, fortune_type=result.type, symbols=result.symbols, summary=result.summary, focus="Rüya")
-        await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="Rüya yorumun")
+        await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="Rüya yorumun", fortune_type="dream")
         await commit_fortune_access(reservation)
         return DreamFortuneResponse(status="completed", result=result, access=reservation.access_state)
     except Exception:

@@ -4,7 +4,37 @@ import asyncio
 from typing import Any
 
 
-def _send_sync(*, user_id: str, title: str, body: str, route: str, message_type: str = "fortune_ready") -> bool:
+_NOTIFICATION_AUDIO: dict[str, tuple[str, str]] = {
+    "general": ("fortune_general_voice_v5", "sirra_fortune_ready_voice"),
+    "coffee": ("fortune_coffee_voice_v5", "sirra_coffee_ready_voice"),
+    "tarot": ("fortune_tarot_voice_v5", "sirra_tarot_ready_voice"),
+    "katina": ("fortune_tarot_voice_v5", "sirra_tarot_ready_voice"),
+    "dream": ("fortune_dream_voice_v5", "sirra_dream_ready_voice"),
+    "palm": ("fortune_palm_voice_v5", "sirra_palm_ready_voice"),
+    "soulmate": ("fortune_soulmate_voice_v5", "sirra_soulmate_ready_voice"),
+    "premium": ("premium_voice_v5", "sirra_premium_voice"),
+    "admin": ("admin_voice_v2", "sirra_admin_voice"),
+}
+
+
+def _audio_profile(*, message_type: str, fortune_type: str | None) -> tuple[str, str]:
+    if message_type == "admin_message":
+        return _NOTIFICATION_AUDIO["admin"]
+    if message_type in {"premium", "premium_nudge"}:
+        return _NOTIFICATION_AUDIO["premium"]
+    normalized = str(fortune_type or "").strip().lower()
+    return _NOTIFICATION_AUDIO.get(normalized, _NOTIFICATION_AUDIO["general"])
+
+
+def _send_sync(
+    *,
+    user_id: str,
+    title: str,
+    body: str,
+    route: str,
+    message_type: str = "fortune_ready",
+    fortune_type: str | None = None,
+) -> bool:
     import firebase_admin
     from firebase_admin import firestore, messaging
 
@@ -16,12 +46,15 @@ def _send_sync(*, user_id: str, title: str, body: str, route: str, message_type:
     tokens = [str(item).strip() for item in (data.get("fcm_tokens") or []) if str(item).strip()]
     if not tokens:
         return False
-    channel_id = "admin_message_channel_v1" if message_type == "admin_message" else "fortune_ready_channel_v3"
-    sound = "sirra_premium_chime" if message_type == "admin_message" else "sirra_whisper"
+    channel_id, sound = _audio_profile(message_type=message_type, fortune_type=fortune_type)
     message = messaging.MulticastMessage(
         tokens=tokens[:500],
         notification=messaging.Notification(title=title, body=body),
-        data={"route": route, "type": message_type},
+        data={
+            "route": route,
+            "type": message_type,
+            "fortune_type": str(fortune_type or "general"),
+        },
         android=messaging.AndroidConfig(
             priority="high",
             notification=messaging.AndroidNotification(
@@ -48,7 +81,13 @@ def _send_sync(*, user_id: str, title: str, body: str, route: str, message_type:
     return success
 
 
-async def notify_fortune_ready(*, user_id: str, fortune_id: str, title: str) -> None:
+async def notify_fortune_ready(
+    *,
+    user_id: str,
+    fortune_id: str,
+    title: str,
+    fortune_type: str = "general",
+) -> None:
     try:
         await asyncio.to_thread(
             _send_sync,
@@ -57,6 +96,7 @@ async def notify_fortune_ready(*, user_id: str, fortune_id: str, title: str) -> 
             body="Yorumun tamamlandı. Görmek için dokun.",
             route=f"/fortune/result/{fortune_id}",
             message_type="fortune_ready",
+            fortune_type=fortune_type,
         )
     except Exception:
         # Bildirim hatası tamamlanmış falı başarısız saymamalı.
@@ -72,6 +112,7 @@ async def notify_admin_message(*, user_id: str, title: str, body: str, route: st
             body=body,
             route=route,
             message_type="admin_message",
+            fortune_type=None,
         )
     except Exception:
         return False

@@ -163,6 +163,8 @@ class GenericFortuneResult(BaseModel):
     daily_ritual_prompt: str = ""
     portrait_image_base64: str | None = None
     portrait_mime_type: str | None = None
+    portrait_image_url: str | None = None
+    portrait_storage_key: str | None = None
 
 
 class GenericFortuneResponse(BaseModel):

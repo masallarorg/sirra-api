@@ -530,15 +530,12 @@ async def delete_my_account(current_user: CurrentUser = Depends(require_current_
         batch.commit()
 
         try:
-            from firebase_admin import storage
+            from app.services.object_storage import delete_user_media
 
-            bucket = storage.bucket()
-            for prefix in (f"users/{uid}/", f"selfies/{uid}/"):
-                for blob in bucket.list_blobs(prefix=prefix):
-                    blob.delete()
+            delete_user_media(uid)
         except Exception as exc:
-            # Some deployments intentionally do not configure Firebase Storage.
-            logger.warning("account delete storage cleanup skipped uid=%s: %s", uid, exc)
+            # R2 cleanup is best-effort and must not block account deletion.
+            logger.warning("account delete R2 cleanup skipped uid=%s: %s", uid, exc)
 
         from firebase_admin import auth
 

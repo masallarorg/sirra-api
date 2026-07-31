@@ -7,12 +7,13 @@ from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.errors import register_error_handlers
 from app.services.openai_client import close_openai_client
+from app.services.object_storage import storage_status
 
 
 def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
-        version="1.8.3",
+        version="1.9.0",
         description="Sırra - Fal ve Astroloji API",
     )
 
@@ -44,7 +45,7 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health() -> dict:
-        return {"status": "ok", "environment": settings.environment, "version": "1.8.3"}
+        return {"status": "ok", "environment": settings.environment, "version": "1.9.0", "storage": storage_status()}
 
     @app.on_event("shutdown")
     async def shutdown_event() -> None:
