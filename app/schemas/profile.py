@@ -57,5 +57,7 @@ class UserProfile(BaseModel):
     selfie_consent_accepted: bool = False
     selfie_persona_tags: list[str] = Field(default_factory=list)
     addressing_preference: str | None = None
+    gender_identity: str | None = None
+    soulmate_portrait_preference: str | None = None
     is_premium: bool = False
     premium_until: str | None = None

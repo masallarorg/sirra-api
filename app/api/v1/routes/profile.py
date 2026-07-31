@@ -108,6 +108,8 @@ def _payload_from_profile(profile: UserProfile, current_user: CurrentUser) -> di
         "selfie_consent_accepted": bool(profile.selfie_consent_accepted),
         "selfie_persona_tags": [str(tag).strip() for tag in (profile.selfie_persona_tags or []) if str(tag).strip()][:12],
         "addressing_preference": _clean(profile.addressing_preference),
+        "gender_identity": _clean(profile.gender_identity),
+        "soulmate_portrait_preference": _clean(profile.soulmate_portrait_preference),
         "profile_completed": bool(profile.birth_date and profile.zodiac_sign),
         "updated_at": now,
         "last_login_at": now,
@@ -318,6 +320,8 @@ async def upsert_profile(
         selfie_consent_accepted=payload.get("selfie_consent_accepted", False),
         selfie_persona_tags=payload.get("selfie_persona_tags", []),
         addressing_preference=payload.get("addressing_preference"),
+        gender_identity=payload.get("gender_identity"),
+        soulmate_portrait_preference=payload.get("soulmate_portrait_preference"),
         is_premium=bool(access.get("is_premium")),
         premium_until=access.get("expires_at"),
     )
@@ -372,6 +376,8 @@ async def get_my_profile(current_user: CurrentUser = Depends(require_current_use
         selfie_consent_accepted=bool(data.get("selfie_consent_accepted", False)),
         selfie_persona_tags=data.get("selfie_persona_tags") if isinstance(data.get("selfie_persona_tags"), list) else [],
         addressing_preference=_clean(data.get("addressing_preference")),
+        gender_identity=_clean(data.get("gender_identity")),
+        soulmate_portrait_preference=_clean(data.get("soulmate_portrait_preference")),
         is_premium=premium_flag,
         premium_until=premium_until.isoformat() if premium_until else None,
     )

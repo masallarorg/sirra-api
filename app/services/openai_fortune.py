@@ -303,6 +303,45 @@ async def generate_generic_fortune(request: GenericFortuneRequest) -> GenericFor
     return _augment_generic_result(GenericFortuneResult.model_validate(data), profile, focus)
 
 
+def _normalize_gender_token(value: object | None) -> str | None:
+    text = str(value or '').strip().lower()
+    if not text:
+        return None
+    male_tokens = {"erkek", "male", "man", "adam", "bay"}
+    female_tokens = {"kadın", "kadin", "female", "woman", "bayan", "hanim", "hanım"}
+    neutral_tokens = {"nötr", "notr", "neutral", "belirtmek istemiyorum", "unspecified", "other"}
+    if text in male_tokens:
+        return "male"
+    if text in female_tokens:
+        return "female"
+    if text in neutral_tokens:
+        return "neutral"
+    return None
+
+
+def _normalized_counterpart_gender(profile: dict) -> str:
+    explicit = _normalize_gender_token(
+        profile.get("soulmate_portrait_preference")
+        or profile.get("soulmatePortraitPreference")
+        or profile.get("soulmate_portrait_gender")
+        or profile.get("soulmatePortraitGender")
+    )
+    if explicit in {"male", "female", "neutral"}:
+        return explicit
+
+    identity = _normalize_gender_token(
+        profile.get("gender_identity")
+        or profile.get("genderIdentity")
+        or profile.get("gender")
+        or profile.get("sex")
+    )
+    if identity == "male":
+        return "female"
+    if identity == "female":
+        return "male"
+    return "female"
+
+
 def _fallback_soulmate_result(*, profile: dict) -> GenericFortuneResult:
     focus = str(profile.get("focus") or "Aşk").strip() or "Aşk"
     theme = str(profile.get("theme") or "Gizemli portre").strip() or "Gizemli portre"
@@ -342,7 +381,7 @@ def _fallback_soulmate_result(*, profile: dict) -> GenericFortuneResult:
     return result
 
 
-def _local_graphite_soulmate_portrait(*, user_id: str, profile: dict, reading: GenericFortuneResult) -> tuple[str, str]:
+def _local_graphite_soulmate_portrait(*, user_id: str, profile: dict, reading: GenericFortuneResult, counterpart_gender: str | None = None) -> tuple[str, str]:
     """Create a deterministic local graphite-style fallback portrait.
 
     The drawing is deliberately fictional and does not copy or infer the face in
@@ -350,6 +389,8 @@ def _local_graphite_soulmate_portrait(*, user_id: str, profile: dict, reading: G
     image-generation service is temporarily unavailable.
     """
     from PIL import Image, ImageDraw, ImageFilter, ImageOps
+
+    target_gender = counterpart_gender or _normalized_counterpart_gender(profile)
 
     seed_source = "|".join(
         [
@@ -404,8 +445,13 @@ def _local_graphite_soulmate_portrait(*, user_id: str, profile: dict, reading: G
     draw.arc((face_box[0] - 24, ear_y, face_box[0] + 22, ear_y + ear_h), 78, 282, fill=mid, width=4)
     draw.arc((face_box[2] - 22, ear_y, face_box[2] + 24, ear_y + ear_h), 258, 102, fill=mid, width=4)
 
-    # Hair varies deterministically between short, wavy and shoulder-length.
-    hair_style = seed % 3
+    # Hair varies with the requested counterpart archetype.
+    if target_gender == "male":
+        hair_style = seed % 2
+    elif target_gender == "female":
+        hair_style = 1 + (seed % 2)
+    else:
+        hair_style = seed % 3
     hair_layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     hd = ImageDraw.Draw(hair_layer)
     if hair_style == 0:
@@ -425,6 +471,18 @@ def _local_graphite_soulmate_portrait(*, user_id: str, profile: dict, reading: G
     paper = Image.alpha_composite(paper, hair_layer)
     draw = ImageDraw.Draw(paper)
 
+    if target_gender == "male":
+        draw.arc((cx - 320, face_box[3] + 28, cx + 320, size + 220), 198, 342, fill=graphite, width=7)
+        draw.line((cx - 64, neck_top + 96, cx - 170, neck_top + 164), fill=mid, width=4)
+        draw.line((cx + 64, neck_top + 96, cx + 170, neck_top + 164), fill=mid, width=4)
+        jaw_layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        jd = ImageDraw.Draw(jaw_layer)
+        jd.polygon([(face_box[0] + 36, face_top + 214), (face_box[0] + 56, face_box[3] - 10), (cx, face_box[3] + 22), (face_box[2] - 56, face_box[3] - 10), (face_box[2] - 36, face_top + 214), (cx, face_top + 332)], fill=(0, 0, 0, 0), outline=(62, 60, 58, 120))
+        paper = Image.alpha_composite(paper, jaw_layer.filter(ImageFilter.GaussianBlur(2.2)))
+        draw = ImageDraw.Draw(paper)
+    elif target_gender == "female":
+        draw.arc((cx - 250, face_box[3] + 42, cx + 250, size + 180), 202, 338, fill=mid, width=3)
+
     # Eyes, brows and facial structure.
     eye_y = face_top + 158 + rng.randint(-5, 5)
     eye_gap = 62 + rng.randint(-4, 6)
@@ -443,7 +501,12 @@ def _local_graphite_soulmate_portrait(*, user_id: str, profile: dict, reading: G
     draw.arc((cx - 28, nose_bottom - 18, cx + 30, nose_bottom + 20), 24, 156, fill=mid, width=3)
 
     mouth_y = face_top + 304 + rng.randint(-4, 7)
-    mouth_w = 66 + rng.randint(-6, 12)
+    if target_gender == "male":
+        mouth_w = 74 + rng.randint(-4, 12)
+    elif target_gender == "female":
+        mouth_w = 60 + rng.randint(-5, 10)
+    else:
+        mouth_w = 66 + rng.randint(-6, 12)
     draw.arc((cx - mouth_w, mouth_y - 18, cx + mouth_w, mouth_y + 22), 202, 338, fill=graphite, width=3)
     draw.arc((cx - mouth_w + 10, mouth_y - 2, cx + mouth_w - 10, mouth_y + 30), 20, 160, fill=mid, width=2)
     draw.arc((cx - 72, face_box[3] - 92, cx + 72, face_box[3] - 20), 18, 162, fill=light, width=3)
@@ -537,9 +600,16 @@ async def generate_soulmate_fortune(*, user_id: str, profile: dict, image_bytes:
 
     assert result is not None
     symbols_hint = ", ".join(str(item) for item in result.symbols[:6])
+    counterpart_gender = _normalized_counterpart_gender(safe_profile)
+    gender_clause = {
+        "female": "The portrait must depict a fictional adult woman as the romantic counterpart.",
+        "male": "The portrait must depict a fictional adult man as the romantic counterpart.",
+        "neutral": "The portrait may depict a softly androgynous adult romantic counterpart.",
+    }.get(counterpart_gender, "The portrait should depict a fictional adult romantic counterpart.")
     portrait_prompt = f"""
 Create a premium graphite pencil portrait on textured ivory paper of exactly one fictional adult romantic counterpart.
 This must be a newly invented person, not the customer from the uploaded selfie and not a copy or transformation of any real face.
+{gender_clause}
 The selfie was used only upstream to understand the customer's requested mood; it is not an image reference for this generation.
 Draw a plausible compatible partner archetype with expressive eyes, natural adult anatomy, professional charcoal and graphite detail,
 subtle mystical light, clean ivory-paper background, no text, no logos, no frame, and no second person.
@@ -557,6 +627,7 @@ The portrait is fictional entertainment and must not claim to identify a real cu
             user_id=user_id,
             profile=safe_profile,
             reading=result,
+            counterpart_gender=counterpart_gender,
         )
     else:
         try:
@@ -576,6 +647,7 @@ The portrait is fictional entertainment and must not claim to identify a real cu
                 user_id=user_id,
                 profile=safe_profile,
                 reading=result,
+                counterpart_gender=counterpart_gender,
             )
 
     result.fortune_id = result.fortune_id or f"soulmate_{uuid4().hex[:10]}"
