@@ -384,6 +384,27 @@ def _decode_json_object(text: str) -> dict[str, Any]:
     raise ValueError("; ".join(errors[-3:]) or "No JSON object found")
 
 
+def _structured_output_edge_case(response_json: dict[str, Any]) -> str | None:
+    status = str(response_json.get("status") or "").strip().lower()
+    if status == "incomplete":
+        details = response_json.get("incomplete_details")
+        reason = details.get("reason") if isinstance(details, dict) else None
+        return f"incomplete:{reason or 'unknown'}"
+
+    for item in response_json.get("output", []) or []:
+        if not isinstance(item, dict):
+            continue
+        for content in item.get("content", []) or []:
+            if not isinstance(content, dict):
+                continue
+            refusal = content.get("refusal")
+            if isinstance(refusal, str) and refusal.strip():
+                return f"refusal:{refusal.strip()[:300]}"
+            if str(content.get("type") or "").lower() == "refusal":
+                return f"refusal:{str(content.get('text') or content.get('refusal') or 'model refusal')[:300]}"
+    return None
+
+
 def extract_output_json(
     response_json: dict[str, Any],
     *,
@@ -391,6 +412,16 @@ def extract_output_json(
     invalid_error_code: str = "OPENAI_OUTPUT_JSON_INVALID",
     user_message: str = "AI çıktısı beklenen biçimde gelmedi. Lütfen tekrar dene.",
 ) -> dict[str, Any]:
+    edge_case = _structured_output_edge_case(response_json)
+    if edge_case:
+        raise AppError(
+            error_code=invalid_error_code,
+            user_message=user_message,
+            developer_message=edge_case,
+            status_code=502,
+            retryable=edge_case.startswith("incomplete:max_output_tokens"),
+        )
+
     parsed = response_json.get("output_parsed")
     if isinstance(parsed, dict):
         return parsed

@@ -38,15 +38,18 @@ def storage_enabled() -> bool:
 
 def storage_status() -> dict[str, Any]:
     credentials = settings.cloudinary_credentials
+    unsigned = settings.cloudinary_unsigned_configured
+    cloud_name = settings.cloudinary_cloud_name_value
     return {
         "provider": _active_provider(),
         "enabled": storage_enabled(),
-        "cloud_name_configured": bool(credentials and credentials[0]),
+        "cloud_name_configured": bool(cloud_name),
         "credentials_configured": bool(credentials),
+        "unsigned_preset_configured": unsigned,
         "credential_source": settings.cloudinary_credential_source,
         "api_key_suffix": credentials[1][-4:] if credentials and len(credentials[1]) >= 4 else None,
-        "upload_auth": "sdk_signature_with_basic_auth_fallback",
-        "private_delivery": True,
+        "upload_auth": "unsigned_upload_preset" if unsigned else "sdk_signature_with_basic_auth_fallback",
+        "private_delivery": not unsigned,
     }
 
 
@@ -60,9 +63,10 @@ def _folder_root() -> str:
 
 
 def _configure_cloudinary() -> None:
-    if not storage_enabled():
-        raise RuntimeError("Cloudinary is not configured")
-    cloud_name, api_key, api_secret = settings.cloudinary_credentials or ("", "", "")
+    credentials = settings.cloudinary_credentials
+    if not credentials:
+        raise RuntimeError("Cloudinary signed credentials are not configured")
+    cloud_name, api_key, api_secret = credentials
     import cloudinary
 
     cloudinary.config(
@@ -85,6 +89,55 @@ def _cloudinary_error_text(response: httpx.Response) -> str:
     except Exception:
         pass
     return response.text[:500]
+
+
+def safe_storage_error(exc: Exception) -> str:
+    text = f"{type(exc).__name__}: {exc}"
+    credentials = settings.cloudinary_credentials
+    if credentials:
+        _, api_key, api_secret = credentials
+        if api_secret:
+            text = text.replace(api_secret, "[REDACTED_CLOUDINARY_SECRET]")
+        if api_key:
+            text = text.replace(api_key, f"***{api_key[-4:]}")
+    return text[:900]
+
+
+def _upload_with_unsigned_preset(
+    *,
+    cloud_name: str,
+    upload_preset: str,
+    filename: str,
+    data: bytes,
+    content_type: str,
+    public_id: str,
+    uid: str,
+    folder: str,
+) -> dict[str, Any]:
+    endpoint = f"https://api.cloudinary.com/v1_1/{quote(cloud_name, safe='')}/image/upload"
+    form = {
+        "upload_preset": upload_preset,
+        "public_id": public_id,
+        "tags": f"sirra,sirra_user_{uid},sirra_category_{folder}",
+        "context": f"owner_uid={uid}|category={folder}|content_type={content_type}",
+    }
+    with httpx.Client(timeout=httpx.Timeout(75.0, connect=12.0)) as client:
+        response = client.post(
+            endpoint,
+            data=form,
+            files={"file": (filename, data, content_type)},
+        )
+    if response.status_code >= 400:
+        header_error = response.headers.get("X-Cld-Error", "").strip()
+        body_error = _cloudinary_error_text(response)
+        detail = header_error or body_error
+        raise RuntimeError(
+            f"Cloudinary unsigned upload failed status={response.status_code} error={detail}"
+        )
+    payload = response.json()
+    if not isinstance(payload, dict) or not payload.get("public_id"):
+        raise RuntimeError("Cloudinary unsigned upload returned an invalid response")
+    return payload
 
 
 def _upload_with_basic_auth(
@@ -178,6 +231,23 @@ def upload_user_bytes(
     ext = _safe_part(extension.lower().lstrip("."), "jpg")
     public_id = f"{_folder_root()}/users/{uid}/{folder}/{name}"
 
+    if settings.cloudinary_unsigned_configured:
+        response = _upload_with_unsigned_preset(
+            cloud_name=settings.cloudinary_cloud_name_value,
+            upload_preset=settings.cloudinary_unsigned_preset_value,
+            filename=f"{name}.{ext}",
+            data=data,
+            content_type=content_type,
+            public_id=public_id,
+            uid=uid,
+            folder=folder,
+        )
+        stored_public_id = str(response.get("public_id") or public_id)
+        secure_url = str(response.get("secure_url") or "").strip()
+        if not secure_url:
+            raise RuntimeError("Cloudinary unsigned upload response has no secure_url")
+        return StoredObject(key=stored_public_id, url=secure_url)
+
     _configure_cloudinary()
     from cloudinary import uploader
 
@@ -230,7 +300,7 @@ def upload_user_bytes(
 
 
 def delete_prefix(prefix: str) -> int:
-    if not storage_enabled():
+    if not storage_enabled() or not settings.cloudinary_credentials:
         return 0
     clean_prefix = str(prefix or "").lstrip("/")
     if not clean_prefix:

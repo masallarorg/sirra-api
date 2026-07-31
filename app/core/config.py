@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     cloudinary_cloud_name: str | None = None
     cloudinary_api_key: str | None = None
     cloudinary_api_secret: str | None = None
+    cloudinary_unsigned_upload_preset: str | None = None
     cloudinary_folder_root: str = "sirra"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
@@ -107,7 +108,35 @@ class Settings(BaseSettings):
 
 
     @property
+    def cloudinary_cloud_name_value(self) -> str:
+        explicit = _clean_env_secret(self.cloudinary_cloud_name, "CLOUDINARY_CLOUD_NAME")
+        if explicit:
+            return explicit
+        raw_url = _clean_env_secret(self.cloudinary_url, "CLOUDINARY_URL")
+        if not raw_url:
+            return ""
+        parsed = urlparse(raw_url)
+        return unquote(parsed.hostname or "").strip() if parsed.scheme.lower() == "cloudinary" else ""
+
+    @property
+    def cloudinary_unsigned_preset_value(self) -> str:
+        return _clean_env_secret(
+            self.cloudinary_unsigned_upload_preset,
+            "CLOUDINARY_UNSIGNED_UPLOAD_PRESET",
+        )
+
+    @property
+    def cloudinary_unsigned_configured(self) -> bool:
+        return bool(
+            self.cloudinary_enabled
+            and self.cloudinary_cloud_name_value
+            and self.cloudinary_unsigned_preset_value
+        )
+
+    @property
     def cloudinary_credential_source(self) -> str:
+        if self.cloudinary_unsigned_configured:
+            return "unsigned_upload_preset"
         cloud_name = _clean_env_secret(self.cloudinary_cloud_name, "CLOUDINARY_CLOUD_NAME")
         api_key = _clean_env_secret(self.cloudinary_api_key, "CLOUDINARY_API_KEY")
         api_secret = _clean_env_secret(self.cloudinary_api_secret, "CLOUDINARY_API_SECRET")
@@ -119,7 +148,10 @@ class Settings(BaseSettings):
 
     @property
     def cloudinary_configured(self) -> bool:
-        return bool(self.cloudinary_enabled and self.cloudinary_credentials)
+        return bool(
+            self.cloudinary_enabled
+            and (self.cloudinary_credentials or self.cloudinary_unsigned_configured)
+        )
 
     @cached_property
     def cors_origins_list(self) -> list[str]:

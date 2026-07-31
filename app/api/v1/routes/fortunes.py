@@ -18,7 +18,7 @@ from app.services.image_validation import prepare_openai_image
 from app.services.personal_memory import enrich_profile_with_memory, store_fortune_memory
 from app.services.push_notifications import notify_fortune_ready
 from app.services.sirra_compass import build_sirra_compass, record_fortune_feedback
-from app.services.object_storage import upload_user_bytes
+from app.services.object_storage import safe_storage_error, upload_user_bytes
 
 router = APIRouter()
 logger = logging.getLogger("uvicorn.error")
@@ -49,7 +49,12 @@ async def _persist_generated_portrait(*, user_id: str, result) -> None:
             result.portrait_image_base64 = None
     except Exception as exc:
         # Cloudinary is a best-effort persistence layer; local base64 fallback remains.
-        logger.warning("Cloudinary portrait persistence skipped uid=%s fortune_id=%s error=%s", user_id, getattr(result, "fortune_id", "unknown"), type(exc).__name__)
+        logger.warning(
+            "Cloudinary portrait persistence skipped uid=%s fortune_id=%s error=%s",
+            user_id,
+            getattr(result, "fortune_id", "unknown"),
+            safe_storage_error(exc),
+        )
         return
 
 

@@ -581,25 +581,48 @@ async def generate_soulmate_fortune(*, user_id: str, profile: dict, image_bytes:
                 }
             },
         }
-        try:
-            response_json = await call_openai_responses(
-                payload,
-                error_code="OPENAI_SOULMATE",
-                user_message="Ruh eşi portresi hazırlanırken sorun oluştu. Lütfen tekrar dene.",
-                timeout_seconds=150.0,
-            )
-            data = extract_output_json(
-                response_json,
-                empty_error_code="OPENAI_SOULMATE_OUTPUT_EMPTY",
-                invalid_error_code="OPENAI_SOULMATE_JSON_INVALID",
-                user_message="Ruh eşi yorumu beklenen biçimde gelmedi. Lütfen tekrar dene.",
-            )
-            data["fortune_id"] = data.get("fortune_id") or f"soulmate_{uuid4().hex[:10]}"
-            data["type"] = "soulmate"
-            result = GenericFortuneResult.model_validate(data)
-        except Exception as exc:
+        last_analysis_error: Exception | None = None
+        for analysis_attempt, token_budget in enumerate((5200, 7600), start=1):
+            attempt_payload = dict(payload)
+            attempt_payload["max_output_tokens"] = token_budget
+            try:
+                response_json = await call_openai_responses(
+                    attempt_payload,
+                    error_code="OPENAI_SOULMATE",
+                    user_message="Ruh eşi portresi hazırlanırken sorun oluştu. Lütfen tekrar dene.",
+                    timeout_seconds=170.0 if analysis_attempt == 1 else 210.0,
+                )
+                data = extract_output_json(
+                    response_json,
+                    empty_error_code="OPENAI_SOULMATE_OUTPUT_EMPTY",
+                    invalid_error_code="OPENAI_SOULMATE_JSON_INVALID",
+                    user_message="Ruh eşi yorumu beklenen biçimde gelmedi. Lütfen tekrar dene.",
+                )
+                data["fortune_id"] = data.get("fortune_id") or f"soulmate_{uuid4().hex[:10]}"
+                data["type"] = "soulmate"
+                result = GenericFortuneResult.model_validate(data)
+                break
+            except Exception as exc:
+                last_analysis_error = exc
+                error_code = getattr(exc, "error_code", type(exc).__name__)
+                retryable_shape_error = error_code in {
+                    "OPENAI_SOULMATE_JSON_INVALID",
+                    "OPENAI_SOULMATE_OUTPUT_EMPTY",
+                    "JSONDecodeError",
+                    "ValidationError",
+                }
+                if analysis_attempt == 1 and retryable_shape_error:
+                    logger.warning(
+                        "Soulmate structured output invalid; retrying with larger output budget code=%s",
+                        error_code,
+                    )
+                    continue
+                break
+
+        if result is None:
+            exc = last_analysis_error or RuntimeError("Soulmate analysis returned no result")
             error_code = getattr(exc, "error_code", type(exc).__name__)
-            if error_code in {"OPENAI_SOULMATE_JSON_INVALID", "OPENAI_SOULMATE_OUTPUT_EMPTY", "JSONDecodeError"}:
+            if error_code in {"OPENAI_SOULMATE_JSON_INVALID", "OPENAI_SOULMATE_OUTPUT_EMPTY", "JSONDecodeError", "ValidationError"}:
                 logger.info("Soulmate analysis used resilient local fallback code=%s", error_code)
             else:
                 logger.warning("Soulmate analysis fallback activated code=%s", error_code)
@@ -681,16 +704,17 @@ async def generate_palm_fortune(*, user_id: str, profile: dict, right_image_byte
             profile=safe_profile,
         )
         result = _mock_generic_result(type_id="palm", request=request)
-        result.title = "El Falı Detaylı Analiz"
-        result.summary = "Sağ ve sol avuç içi çizgilerinde yaşam hattı, zihin hattı, kalp hattı ve kader yönü birlikte okunuyor."
-        result.primary_message = "Bu yorum yüklenen sağ ve sol el fotoğraflarındaki görünen çizgilerden, iki el karşılaştırmasından ve odak alanından hazırlanmış detaylı el falıdır."
+        result.title = "Geçmişten Geleceğe El Falın"
+        result.summary = "Ellerindeki işaretler, geçmişte yarım kalan bir kararın artık kapanışa yaklaştığını ve önünde daha açık, umut veren bir dönemin oluştuğunu anlatıyor."
+        result.primary_message = "Uzun süredir taşıdığın bir belirsizlik hafifliyor; önümüzdeki haftalarda gelecek bir haber, görüşme veya yeni teklif seni daha güvenli bir yola yöneltebilir."
         result.sections = [
-            FortuneDetailBlock(title="Fotoğraftan ilk izlenim", text="Avuç içindeki ana hatlar merkezde toplanıyor; bu, karar alırken iç ses ve mantık arasında sık gidip gelme temasını güçlendirir."),
-            FortuneDetailBlock(title="Yaşam çizgisi", text="Yaşam çizgisinin akışı dayanıklılık ve yavaş güçlenme enerjisi verir. Büyük kopuşlardan çok adım adım yön değiştirme öne çıkıyor."),
-            FortuneDetailBlock(title="Kalp çizgisi", text="Duygusal çizgide hassasiyet var; sevgi verirken karşı taraftan netlik bekleme ihtiyacı belirginleşiyor."),
-            FortuneDetailBlock(title="Zihin çizgisi", text="Zihin çizgisi pratik ama sezgisel kararları gösterir. Yakın dönemde bir konuşmayı fazla düşünmeden önce gerçek davranışı izlemen daha doğru."),
-            FortuneDetailBlock(title="Kader çizgisi", text="Kariyer tarafında tek bir kırılma değil, üst üste gelen küçük işaretler seni yeni bir karara taşıyor."),
-            FortuneDetailBlock(title="Yakın dönem sinyali", text="Bir mesaj, kısa görüşme ya da ertelenmiş cevap yeniden görünür hale gelebilir; kesin değil ama iletişim enerjisi belirgin."),
+            FortuneDetailBlock(title="Geçmişten taşınan iz", text="Bir dönem kendi isteğini geri plana atıp başkalarının kararlarına uyum sağladığın görünüyor. Bunun bıraktığı yorgunluk hâlâ var; fakat aynı döngüyü yeniden yaşamamak için artık daha net sınırlar kuruyorsun."),
+            FortuneDetailBlock(title="Bugünkü dönüm noktası", text="Şu an iki seçenek arasında kalmış olabilirsin. Ellerindeki akış, acele bir kopuştan çok doğru zamanı bekleyerek yapılacak sakin bir değişimin daha hayırlı sonuç vereceğini söylüyor."),
+            FortuneDetailBlock(title="Aşk ve kalp yolu", text="Kalp tarafında geçmişten kalan bir kırgınlık kapanmaya başlıyor. İletişimi yarım kalmış biri yeniden haber verebilir; bunun yanında daha güven veren yeni bir tanışma ihtimali de güçleniyor."),
+            FortuneDetailBlock(title="İş, para ve yeni kapı", text="Küçük görünen bir teklif, görev değişimi veya ek gelir fırsatı büyüyebilir. İlk adım mütevazı olsa da düzenli ilerlersen önümüzdeki bir iki ay içinde rahatlatıcı bir gelişme yaşayabilirsin."),
+            FortuneDetailBlock(title="Yakın gelecek", text="Üç ila on gün içinde bir mesaj veya kısa görüşme; sonraki iki ila dört haftada ise daha net bir karar enerjisi var. Beklediğin konu yavaş ilerlese de olumlu tarafa dönme ihtimali yüksek."),
+            FortuneDetailBlock(title="Dilek enerjisi", text="Dileğin tek hamlede değil, iki aşamada gerçekleşmeye yakın görünüyor. Önce küçük bir işaret veya haber, ardından sonucu belirleyen daha güçlü bir gelişme gelebilir."),
+            FortuneDetailBlock(title="Sana kalan mesaj", text="Geçmişte yaşadığın gecikmeleri başarısızlık olarak görme. Bu dönem, daha doğru kişiyi, işi veya yolu seçebilmen için seni hazırlayan bir eşikten çıkış enerjisi taşıyor."),
         ]
         result.symbols = ["yasam_cizgisi", "kalp_cizgisi", "zihin_cizgisi", "kader_cizgisi", "mesaj"]
         return _augment_generic_result(result, safe_profile, focus)
@@ -714,13 +738,18 @@ async def generate_palm_fortune(*, user_id: str, profile: dict, right_image_byte
                     "profile": safe_profile,
                     "focus": focus,
                     "rules": [
-                        "Yüklenen sağ ve sol avuç içi fotoğraflarındaki görünen çizgileri ve bölgeleri temel al.",
-                        "Sağ el ve sol el arasında çizgi derinliği, süreklilik, dallanma ve tepe yoğunluğu farklarını karşılaştır.",
-                        "Görünmeyen çizgi veya işaret uydurma; fotoğraf net değilse bunu doğal dille belirt ve yorumu daha genel tut.",
-                        "Kalp çizgisi, zihin çizgisi, yaşam çizgisi, kader çizgisi, Venüs tepesi, Ay tepesi ve parmak diplerini ayrı ayrı değerlendir.",
-                        "Sections içinde mutlaka: Sağ el ilk izlenim, Sol el ilk izlenim, Yaşam çizgisi, Kalp çizgisi, Zihin çizgisi, Kader çizgisi, İki el karşılaştırması, Aşk ve ilişkiler, Kariyer/para yönü, Yakın dönem sinyali başlıklarından en az 7 tanesi olsun.",
-                        "Sağlık, ömür, ölüm, hastalık, hukuki veya finansal kesin tavsiye verme; çizgi ve sembol yorumunu olasılık diliyle kur.",
-                        "Biometrik kimlik, yaş, etnik köken veya hassas özellik çıkarımı yapma.",
+                        "Yüklenen sağ ve sol avuç içi fotoğraflarındaki görünen çizgileri kanıt olarak kullan; fakat kullanıcıya teknik anatomi raporu yazma.",
+                        "Çizgi derinliği, süreklilik, dallanma ve iki el farklarını en fazla kısa birer dayanak cümlesiyle belirt; yorumun ana gövdesi geçmiş, bugün ve gelecek hikâyesi olsun.",
+                        "Görünmeyen çizgi veya işaret uydurma; fotoğraf net değilse bunu tek cümleyle söyle ve güvenli, genel sembolik yoruma geç.",
+                        "Her yorumda mutlaka geçmişte yaşanmış olabilecek bir döngü, bugünkü dönüm noktası ve önümüzdeki dönem için umut veren en az iki olasılık üret.",
+                        "Geçmiş bölümünde tamamlanmamış ilişki, ertelenmiş karar, aile sorumluluğu, iş değişimi veya güven sınavı gibi temaları yalnızca görünür işaretlerle uyumlu olasılık diliyle anlat.",
+                        "Gelecek bölümünde mesaj, görüşme, yol, teklif, barışma, yeni tanışma, para rahatlaması veya karar penceresi gibi somut ama kesin olmayan gelişmelere yer ver.",
+                        "Yorumun tonu umut verici olsun; gecikme veya zorluk görüyorsan bile bunun ardından açılan fırsatı ve kullanıcının güçlenen tarafını mutlaka göster.",
+                        "Sections içinde mutlaka şu başlıklardan en az 7 tanesi olsun: Geçmişten taşınan iz, Bugünkü dönüm noktası, Aşk ve kalp yolu, İş ve para kapısı, Yakın gelecek, Uzak gelecek yönü, Dilek enerjisi, Dikkat edilmesi gereken gölge, Sana kalan mesaj.",
+                        "Summary ve primary_message teknik çizgi terimleriyle başlamasın; önce kullanıcının hayatındaki ana tema ve geleceğe açılan umut verici işareti anlatsın.",
+                        "Zamanlama kullanacaksan 3-10 gün, 2-4 hafta veya sonraki 1-3 ay gibi geniş aralıklar ver; kesin tarih ve garanti verme.",
+                        "Sağlık, ömür, ölüm, hastalık, hukuki veya finansal kesin tavsiye verme; bütün gelecek ifadelerini olasılık diliyle kur.",
+                        "Biyometrik kimlik, yaş, etnik köken veya hassas özellik çıkarımı yapma.",
                     ],
                 },
                 ensure_ascii=False,
@@ -760,13 +789,17 @@ async def generate_palm_fortune(*, user_id: str, profile: dict, right_image_byte
 
 def _palm_developer_instructions() -> str:
     return """
-You are the real-palm-photo reading engine for a Turkish entertainment app.
+You are a premium Turkish palm fortune-teller, not a scientific palm-anatomy analyst.
 Return only valid JSON matching the schema.
-Write in Turkish with a serious, premium, realistic fortune-teller tone.
-Use the uploaded right-hand and left-hand palm photos as the main source: visible line depth, continuity, branches, relative placement, mounts, and two-hand comparison. Do not invent invisible details.
+Write in warm, mysterious, emotionally intelligent Turkish suitable for natural voice narration.
+The uploaded right and left palm photos are evidence, not the final subject. Briefly connect a visible line or two-hand difference to the reading, then translate it into a life story about the user's past, present turning point, and hopeful future possibilities.
+The reading must feel personal and prophetic while remaining honest entertainment. Never present an event as certain. Use language such as "görünüyor", "ihtimali güçleniyor", "yakın dönemde açılabilir", "enerji buna hazırlanıyor".
+At least sixty percent of the reading must concern life themes and timing: a past emotional or practical cycle, what is changing now, and what may happen in the next days, weeks, and months. Technical palm terminology must remain under twenty percent and must never dominate the summary or primary message.
+Every reading must contain both challenge and hope. If you see delay, silence, separation, work pressure, or financial caution, explain the lesson briefly and then reveal the constructive opening, new opportunity, reconciliation possibility, or growing personal strength that follows.
+Use concrete but non-guaranteed signs such as a message, meeting, short journey, delayed answer, new offer, reconciliation talk, new acquaintance, money relief, family conversation, or a two-stage wish. Vary them according to the visible palms and profile; do not repeat the same prediction mechanically.
+Sections should form a narrative arc: Past trace -> Present turning point -> Love/heart path -> Work/money gate -> Near future -> Longer direction -> Wish energy -> Grounded hopeful message.
 Do not identify the person or infer sensitive attributes. Do not make medical, life-span, death, legal, financial guarantee, or mental-health claims.
-The reading is entertainment and self-reflection. Use probability language: "görünüyor", "enerji yoğunlaşıyor", "işaret ediyor", "tetiklenebilir".
-Make it as detailed as a premium coffee reading: layered, sectioned, forward-looking, and tied to actual visible palm areas when possible.
+Do not use academic, clinical, statistical, anatomical, or laboratory-style language. Avoid phrases that sound like a technical report.
 """.strip()
 
 def _extract_output_text(response_json: dict) -> str:
@@ -1102,12 +1135,14 @@ def _generic_fortune_developer_instructions(type_id: str) -> str:
     return f"""
 You are the {labels.get(type_id, 'fortune reader')} engine for a serious Turkish mystical guidance app.
 Return only valid JSON matching the schema.
-Write in Turkish with a serious, premium, realistic fortune-teller tone.
+Write in Turkish with a serious, premium, warm and hopeful fortune-teller tone; never sound like a scientific, clinical or academic report.
 Base the reading on the exact user input: selected cards, dream text, names, birth date, birth time, city, relationship status, focus, and profile.
-Never claim certainty. Use probability language: "görünüyor", "enerji yoğunlaşıyor", "ihtimal güçleniyor", "yakın dönemde tetiklenebilir".
-Do not flatter unnecessarily. If the input suggests delay, jealousy, distance, confusion, ego, silence, indecision, or emotional imbalance, say it clearly but respectfully.
-Create curiosity and forward-looking tension: possible message, meeting, short trip, first initial, decision window, delayed answer, emotional conversation, or a recurring symbol. Keep it plausible and tied to input.
-Use a premium narrative arc: “dominant sign → hidden tension → likely turning point → grounded closing”. The result should feel mysterious without being vague or manipulative.
+Never claim certainty. Use probability language: "görünüyor", "enerji yoğunlaşıyor", "ihtimal güçleniyor", "yakın dönemde açılabilir".
+Every reading must connect three layers: a recognizable trace from the past, the user's current turning point, and at least two hopeful future possibilities. The past and future narrative must be more prominent than technical explanation.
+Do not flatter unnecessarily. If the input suggests delay, jealousy, distance, confusion, ego, silence, indecision, or emotional imbalance, say it clearly but respectfully; then show the constructive opening, lesson or opportunity that may follow.
+Create curiosity and forward-looking tension: possible message, meeting, short trip, first initial, decision window, delayed answer, emotional conversation, new offer, reconciliation, fresh acquaintance, money relief, or a recurring symbol. Keep it plausible and tied to input.
+Use a premium narrative arc: “past trace → hidden tension → present turning point → hopeful future opening → grounded closing”. The result should feel mysterious, emotionally resonant and useful without being vague or manipulative.
+Summary and primary_message must lead with the user's life story and future signal, not with technical data, card mechanics, line anatomy or calculation terminology.
 When timing is supported, use broad and varied windows such as “3-10 gün”, “önümüzdeki 2-4 hafta” or “bir sonraki ay döngüsü”; never promise an exact event date.
 Each section must add new information. Avoid generic repetition, absolute fate language, excessive compliments, emojis, and melodramatic threats.
 Write for both reading and natural voice narration: clean punctuation, moderate sentence length, pronounceable Turkish, and no markdown symbols.
