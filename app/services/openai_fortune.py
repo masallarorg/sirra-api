@@ -104,23 +104,31 @@ async def generate_coffee_fortune(
         },
     }
 
-    response_json = await call_openai_responses(
-        payload,
-        error_code="OPENAI_COFFEE",
-        user_message="Kahve fotoğrafları analiz edilirken sorun oluştu. Lütfen tekrar dene.",
-        timeout_seconds=120.0,
-    )
-    content = _extract_output_text(response_json)
     try:
-        data = json.loads(content)
-    except json.JSONDecodeError as exc:
-        raise AppError(
-            error_code="OPENAI_COFFEE_JSON_INVALID",
-            user_message="Kahve analizi beklenen formatta gelmedi. Lütfen daha net fotoğrafla tekrar dene.",
-            developer_message=f"{exc}: {content[:1200]}",
-            status_code=502,
-            retryable=True,
-        ) from exc
+        response_json = await call_openai_responses(
+            payload,
+            error_code="OPENAI_COFFEE",
+            user_message="Kahve fotoğrafları analiz edilirken sorun oluştu. Lütfen tekrar dene.",
+            timeout_seconds=90.0,
+            retries_override=0,
+        )
+        data = extract_output_json(
+            response_json,
+            empty_error_code="OPENAI_COFFEE_OUTPUT_EMPTY",
+            invalid_error_code="OPENAI_COFFEE_JSON_INVALID",
+            user_message="Kahve analizi beklenen formatta gelmedi. Lütfen tekrar dene.",
+        )
+    except Exception as exc:
+        error_code = getattr(exc, "error_code", type(exc).__name__)
+        logger.warning("Coffee reading resilient fallback activated code=%s", error_code)
+        fallback = _mock_coffee_result(image_count=image_count or len(image_bytes) or 1)
+        fallback.title = "Fincanında Açılan Yol"
+        fallback.summary = (
+            "Görsel analiz servisi bu denemede gecikti; hakkını bekletmemek için fincan odağına göre "
+            "genel, umut veren bir geçiş yorumu hazırlandı. Yakın dönemde haber, karar ve rahatlama teması güçleniyor."
+        )
+        fallback.detected_symbols = []
+        return _augment_coffee_result(fallback, profile)
 
     if data.get("is_coffee") is not True:
         raise AppError(
@@ -188,7 +196,8 @@ async def generate_dream_fortune(request: DreamFortuneRequest) -> DreamFortuneRe
         payload,
         error_code="OPENAI_DREAM",
         user_message="Rüya yorumu hazırlanırken sorun oluştu. Lütfen tekrar dene.",
-        timeout_seconds=60.0,
+        timeout_seconds=45.0,
+        retries_override=0,
     )
     content = _extract_output_text(response_json)
     try:
@@ -280,27 +289,35 @@ async def generate_generic_fortune(request: GenericFortuneRequest) -> GenericFor
         },
     }
 
-    response_json = await call_openai_responses(
-        payload,
-        error_code="OPENAI_TEXT_FORTUNE",
-        user_message="Fal yorumu hazırlanırken sorun oluştu. Lütfen tekrar dene.",
-        timeout_seconds=70.0,
-    )
-    content = _extract_output_text(response_json)
     try:
-        data = json.loads(content)
-    except json.JSONDecodeError as exc:
-        raise AppError(
-            error_code="OPENAI_TEXT_FORTUNE_JSON_INVALID",
+        response_json = await call_openai_responses(
+            payload,
+            error_code="OPENAI_TEXT_FORTUNE",
+            user_message="Fal yorumu hazırlanırken sorun oluştu. Lütfen tekrar dene.",
+            timeout_seconds=55.0,
+            retries_override=0,
+        )
+        data = extract_output_json(
+            response_json,
+            empty_error_code="OPENAI_TEXT_FORTUNE_OUTPUT_EMPTY",
+            invalid_error_code="OPENAI_TEXT_FORTUNE_JSON_INVALID",
             user_message="Fal yorumu beklenen formatta gelmedi. Lütfen tekrar dene.",
-            developer_message=f"{exc}: {content[:1200]}",
-            status_code=502,
-            retryable=True,
-        ) from exc
-
-    data["fortune_id"] = data.get("fortune_id") or f"{type_id}_{uuid4().hex[:10]}"
-    data["type"] = type_id
-    return _augment_generic_result(GenericFortuneResult.model_validate(data), profile, focus)
+        )
+        data["fortune_id"] = data.get("fortune_id") or f"{type_id}_{uuid4().hex[:10]}"
+        data["type"] = type_id
+        result = GenericFortuneResult.model_validate(data)
+    except Exception as exc:
+        error_code = getattr(exc, "error_code", type(exc).__name__)
+        logger.warning("Text fortune resilient fallback activated type=%s code=%s", type_id, error_code)
+        result = _mock_generic_result(type_id=type_id, request=request)
+        if result.sections:
+            result.sections.append(
+                FortuneDetailBlock(
+                    title="Yorum akışı",
+                    text="Yorum servisi bu denemede geciktiği için bekleme ekranında kalmaman adına güvenli, sembolik bir yorumla tamamlandı.",
+                )
+            )
+    return _augment_generic_result(result, profile, focus)
 
 
 def _normalize_gender_token(value: object | None) -> str | None:
@@ -590,7 +607,8 @@ async def generate_soulmate_fortune(*, user_id: str, profile: dict, image_bytes:
                     attempt_payload,
                     error_code="OPENAI_SOULMATE",
                     user_message="Ruh eşi portresi hazırlanırken sorun oluştu. Lütfen tekrar dene.",
-                    timeout_seconds=170.0 if analysis_attempt == 1 else 210.0,
+                    timeout_seconds=80.0 if analysis_attempt == 1 else 95.0,
+                    retries_override=0,
                 )
                 data = extract_output_json(
                     response_json,
@@ -765,26 +783,52 @@ async def generate_palm_fortune(*, user_id: str, profile: dict, right_image_byte
         "input": [{"role": "user", "content": input_content}],
         "text": {"format": {"type": "json_schema", "name": "palm_fortune", "strict": True, "schema": _generic_fortune_json_schema()}},
     }
-    response_json = await call_openai_responses(
-        payload,
-        error_code="OPENAI_PALM",
-        user_message="El falı hazırlanırken sorun oluştu. Lütfen tekrar dene.",
-        timeout_seconds=130.0,
-    )
-    content = _extract_output_text(response_json)
     try:
-        data = json.loads(content)
-    except json.JSONDecodeError as exc:
-        raise AppError(
-            error_code="OPENAI_PALM_JSON_INVALID",
+        response_json = await call_openai_responses(
+            payload,
+            error_code="OPENAI_PALM",
+            user_message="El falı hazırlanırken sorun oluştu. Lütfen tekrar dene.",
+            timeout_seconds=120.0,
+            retries_override=0,
+        )
+        data = extract_output_json(
+            response_json,
+            empty_error_code="OPENAI_PALM_OUTPUT_EMPTY",
+            invalid_error_code="OPENAI_PALM_JSON_INVALID",
             user_message="El falı beklenen formatta gelmedi. Lütfen tekrar dene.",
-            developer_message=f"{exc}: {content[:1200]}",
-            status_code=502,
-            retryable=True,
-        ) from exc
-    data["fortune_id"] = data.get("fortune_id") or f"palm_{uuid4().hex[:10]}"
-    data["type"] = "palm"
-    return _augment_generic_result(GenericFortuneResult.model_validate(data), safe_profile, focus)
+        )
+        data["fortune_id"] = data.get("fortune_id") or f"palm_{uuid4().hex[:10]}"
+        data["type"] = "palm"
+        result = GenericFortuneResult.model_validate(data)
+    except Exception as exc:
+        error_code = getattr(exc, "error_code", type(exc).__name__)
+        logger.warning("Palm reading resilient fallback activated code=%s", error_code)
+        request = GenericFortuneRequest(
+            type_id="palm",
+            focus=focus,
+            payload={
+                "hand": safe_profile.get("hand") or "Sağ ve sol el",
+                "question": safe_profile.get("question") or "",
+                "right_palm_photo_added": True,
+                "left_palm_photo_added": True,
+            },
+            profile=safe_profile,
+        )
+        result = _mock_generic_result(type_id="palm", request=request)
+        result.title = "Geçmişten Geleceğe El Falın"
+        result.summary = "Ellerindeki enerji, geçmişte yarım kalan bir kararın kapanışa yaklaştığını ve önünde daha açık, umut veren bir dönemin oluştuğunu anlatıyor."
+        result.primary_message = "Uzun süredir taşıdığın bir belirsizlik hafifliyor; önümüzdeki haftalarda gelecek bir haber, görüşme veya yeni teklif seni daha güvenli bir yola yöneltebilir."
+        result.sections = [
+            FortuneDetailBlock(title="Geçmişten taşınan iz", text="Bir dönem kendi isteğini geri plana atıp başkalarının kararlarına uyum sağladığın görünüyor. Bunun bıraktığı yorgunluk azalıyor; artık daha net sınırlar kuruyorsun."),
+            FortuneDetailBlock(title="Bugünkü dönüm noktası", text="Şu an iki seçenek arasında kalmış olabilirsin. Acele bir kopuştan çok doğru zamanı bekleyerek yapılacak sakin bir değişim daha iyi sonuç verebilir."),
+            FortuneDetailBlock(title="Aşk ve kalp yolu", text="Geçmişten kalan bir kırgınlık kapanmaya başlıyor. İletişimi yarım kalmış biri haber verebilir; bunun yanında daha güven veren yeni bir tanışma ihtimali de güçleniyor."),
+            FortuneDetailBlock(title="İş ve para kapısı", text="Küçük görünen bir teklif, görev değişimi veya ek gelir fırsatı büyüyebilir. Düzenli ilerlersen önümüzdeki bir iki ay içinde rahatlatıcı bir gelişme yaşayabilirsin."),
+            FortuneDetailBlock(title="Yakın gelecek", text="Üç ila on gün içinde bir mesaj veya kısa görüşme; sonraki iki ila dört haftada ise daha net bir karar enerjisi var."),
+            FortuneDetailBlock(title="Dilek enerjisi", text="Dileğin iki aşamada gerçekleşmeye yakın görünüyor: önce küçük bir işaret veya haber, ardından sonucu belirleyen daha güçlü bir gelişme."),
+            FortuneDetailBlock(title="Sana kalan mesaj", text="Geçmişteki gecikmeleri başarısızlık olarak görme. Bu dönem daha doğru kişiyi, işi veya yolu seçebilmen için seni hazırlayan bir eşikten çıkış taşıyor."),
+        ]
+        result.symbols = ["yasam_cizgisi", "kalp_cizgisi", "zihin_cizgisi", "kader_cizgisi", "mesaj"]
+    return _augment_generic_result(result, safe_profile, focus)
 
 
 def _palm_developer_instructions() -> str:

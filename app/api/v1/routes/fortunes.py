@@ -81,6 +81,7 @@ async def fortune_feedback(
 
 @router.post("/generate", response_model=GenericFortuneResponse)
 async def generate_fortune(request: GenericFortuneRequest, current_user: CurrentUser = Depends(require_current_user)) -> GenericFortuneResponse:
+    logger.info("Fortune request started endpoint=generate type=%s uid=%s", request.type_id, current_user.uid)
     request.profile = request.profile or {}
     request.profile["focus"] = request.focus
     request.profile = await enrich_profile_with_memory(user_id=current_user.uid, profile=request.profile, focus=request.focus)
@@ -95,6 +96,7 @@ async def generate_fortune(request: GenericFortuneRequest, current_user: Current
         await store_fortune_memory(user_id=current_user.uid, fortune_id=result.fortune_id, fortune_type=result.type, symbols=result.symbols, summary=result.summary, focus=request.focus)
         await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="Fal yorumun", fortune_type=request.type_id)
         await commit_fortune_access(reservation)
+        logger.info("Fortune request completed endpoint=generate type=%s uid=%s fortune_id=%s", request.type_id, current_user.uid, result.fortune_id)
         return GenericFortuneResponse(fortune_id=result.fortune_id, status="completed", result=result, access=reservation.access_state)
     except Exception:
         await refund_fortune_access(reservation)
@@ -108,6 +110,7 @@ async def coffee_fortune(
     focus: Annotated[str, Form()] = "Genel enerji",
     current_user: CurrentUser = Depends(require_current_user),
 ) -> CoffeeFortuneResponse:
+    logger.info("Fortune request started endpoint=coffee uid=%s image_count=%s", current_user.uid, len(images))
     if not 1 <= len(images) <= 3:
         raise AppError(
             error_code="COFFEE_IMAGE_COUNT_INVALID",
@@ -150,6 +153,7 @@ async def coffee_fortune(
         await store_fortune_memory(user_id=current_user.uid, fortune_id=result.fortune_id, fortune_type="coffee", symbols=[symbol.symbol for symbol in result.detected_symbols], summary=result.summary, focus=profile.get("focus"))
         await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="Kahve falın", fortune_type="coffee")
         await commit_fortune_access(reservation)
+        logger.info("Fortune request completed endpoint=coffee uid=%s fortune_id=%s", current_user.uid, result.fortune_id)
 
         return CoffeeFortuneResponse(
             fortune_id=result.fortune_id,
@@ -173,6 +177,7 @@ async def palm_fortune(
     question: Annotated[str, Form()] = "",
     current_user: CurrentUser = Depends(require_current_user),
 ) -> GenericFortuneResponse:
+    logger.info("Fortune request started endpoint=palm uid=%s", current_user.uid)
     right_data = prepare_openai_image(
         await right_palm_image.read(),
         error_prefix="PALM_RIGHT_IMAGE",
@@ -215,6 +220,7 @@ async def palm_fortune(
         await store_fortune_memory(user_id=current_user.uid, fortune_id=result.fortune_id, fortune_type=result.type, symbols=result.symbols, summary=result.summary, focus=focus)
         await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="El falın", fortune_type="palm")
         await commit_fortune_access(reservation)
+        logger.info("Fortune request completed endpoint=palm uid=%s fortune_id=%s", current_user.uid, result.fortune_id)
         return GenericFortuneResponse(fortune_id=result.fortune_id, status="completed", result=result, access=reservation.access_state)
     except Exception:
         await refund_fortune_access(reservation)
@@ -229,6 +235,7 @@ async def soulmate_fortune(
     theme: Annotated[str, Form()] = "Gizemli portre",
     current_user: CurrentUser = Depends(require_current_user),
 ) -> GenericFortuneResponse:
+    logger.info("Fortune request started endpoint=soulmate uid=%s", current_user.uid)
     data = prepare_openai_image(
         await selfie.read(),
         error_prefix="SOULMATE_SELFIE",
@@ -259,6 +266,7 @@ async def soulmate_fortune(
         await store_fortune_memory(user_id=current_user.uid, fortune_id=result.fortune_id, fortune_type=result.type, symbols=result.symbols, summary=result.summary, focus=focus)
         await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="Ruh eşi portren", fortune_type="soulmate")
         await commit_fortune_access(reservation)
+        logger.info("Fortune request completed endpoint=soulmate uid=%s fortune_id=%s", current_user.uid, result.fortune_id)
         return GenericFortuneResponse(fortune_id=result.fortune_id, status="completed", result=result, access=reservation.access_state)
     except Exception:
         await refund_fortune_access(reservation)

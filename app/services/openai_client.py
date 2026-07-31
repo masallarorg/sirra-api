@@ -68,11 +68,12 @@ async def call_openai_responses(
     error_code: str,
     user_message: str,
     timeout_seconds: float | None = None,
+    retries_override: int | None = None,
 ) -> dict[str, Any]:
     ensure_openai_configured(user_message=user_message)
     request_payload = add_default_openai_options(payload)
     client = _get_client()
-    retries = max(settings.openai_retries, 0)
+    retries = max(settings.openai_retries if retries_override is None else retries_override, 0)
 
     last_exc: Exception | None = None
     for attempt in range(retries + 1):
