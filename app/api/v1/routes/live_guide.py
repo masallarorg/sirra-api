@@ -228,7 +228,7 @@ async def _generate_reply(user_id: str, request: LiveGuideRequest, image_bytes: 
         content.append({"type": "input_image", "image_url": image_data_url(image_bytes)})
 
     payload = {
-        "model": settings.openai_model,
+        "model": settings.vision_model if image_bytes else settings.openai_model,
         "instructions": (
             "Sen Canlı Rehber adlı AI destekli kişisel fal ve astroloji rehberisin. "
             "Sakin, profesyonel, şeffaf ve duygusal açıdan güvenli bir dille konuş. "
@@ -243,7 +243,7 @@ async def _generate_reply(user_id: str, request: LiveGuideRequest, image_bytes: 
             payload,
             error_code="OPENAI_LIVE_GUIDE",
             user_message="Canlı Rehber yanıtı hazırlanırken sorun oluştu. Lütfen tekrar dene.",
-            timeout_seconds=55.0,
+            timeout_seconds=120.0 if image_bytes else 55.0,
         )
         return _extract_text(response_json) or _fallback_reply(request)
     except AppError:

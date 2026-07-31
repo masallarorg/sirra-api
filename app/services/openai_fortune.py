@@ -83,7 +83,7 @@ async def generate_coffee_fortune(
         )
 
     payload = {
-        "model": settings.openai_model,
+        "model": settings.vision_model,
         "instructions": _coffee_developer_instructions(),
         "input": [{"role": "user", "content": input_content}],
         "text": {
@@ -100,7 +100,7 @@ async def generate_coffee_fortune(
         payload,
         error_code="OPENAI_COFFEE",
         user_message="Kahve fotoğrafları analiz edilirken sorun oluştu. Lütfen tekrar dene.",
-        timeout_seconds=75.0,
+        timeout_seconds=120.0,
     )
     content = _extract_output_text(response_json)
     try:
@@ -345,7 +345,7 @@ async def generate_soulmate_fortune(*, user_id: str, profile: dict, image_bytes:
         {"type": "input_image", "image_url": image_data_url(image_bytes)},
     ]
     payload = {
-        "model": settings.openai_model,
+        "model": settings.vision_model,
         "instructions": _generic_fortune_developer_instructions("soulmate"),
         "input": [{"role": "user", "content": input_content}],
         "text": {"format": {"type": "json_schema", "name": "soulmate_fortune", "strict": True, "schema": _generic_fortune_json_schema()}},
@@ -354,7 +354,7 @@ async def generate_soulmate_fortune(*, user_id: str, profile: dict, image_bytes:
         payload,
         error_code="OPENAI_SOULMATE",
         user_message="Ruh eşi portresi hazırlanırken sorun oluştu. Lütfen tekrar dene.",
-        timeout_seconds=80.0,
+        timeout_seconds=130.0,
     )
     content = _extract_output_text(response_json)
     try:
@@ -464,7 +464,7 @@ async def generate_palm_fortune(*, user_id: str, profile: dict, right_image_byte
         {"type": "input_image", "image_url": image_data_url(left_image_bytes)},
     ]
     payload = {
-        "model": settings.openai_model,
+        "model": settings.vision_model,
         "instructions": _palm_developer_instructions(),
         "input": [{"role": "user", "content": input_content}],
         "text": {"format": {"type": "json_schema", "name": "palm_fortune", "strict": True, "schema": _generic_fortune_json_schema()}},
@@ -473,7 +473,7 @@ async def generate_palm_fortune(*, user_id: str, profile: dict, right_image_byte
         payload,
         error_code="OPENAI_PALM",
         user_message="El falı hazırlanırken sorun oluştu. Lütfen tekrar dene.",
-        timeout_seconds=85.0,
+        timeout_seconds=130.0,
     )
     content = _extract_output_text(response_json)
     try:

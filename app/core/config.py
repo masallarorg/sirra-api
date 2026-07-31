@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     allow_mock_auth: bool = False
     openai_api_key: str | None = None
     openai_model: str = "gpt-5.6"
+    openai_vision_model: str | None = None
     openai_image_model: str = "gpt-image-2"
     openai_api_base: str = "https://api.openai.com/v1"
     openai_reasoning_effort: str | None = "low"
@@ -32,7 +33,7 @@ class Settings(BaseSettings):
     google_play_service_account_json: str | None = None
     google_play_service_account_path: str | None = None
     trusted_hosts: str = "*"
-    max_image_upload_mb: int = 8
+    max_image_upload_mb: int = 16
     max_openai_image_edge_px: int = 1280
     admob_rewarded_ad_unit_id: str = "ca-app-pub-7479381661494073/9143635106"
     admob_reward_amount: int = 2
@@ -51,6 +52,11 @@ class Settings(BaseSettings):
     cloudinary_folder_root: str = "sirra"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
+    @property
+    def vision_model(self) -> str:
+        configured = str(self.openai_vision_model or "").strip()
+        return configured or self.openai_model
 
     @cached_property
     def trusted_hosts_list(self) -> list[str]:

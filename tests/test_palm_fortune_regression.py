@@ -11,7 +11,7 @@ async def test_real_palm_generation_uses_function_profile_not_mock_request(monke
     """Regression: production palm flow must not reference mock-only `request`."""
 
     async def fake_responses(payload, **kwargs):
-        assert payload["model"] == settings.openai_model
+        assert payload["model"] == settings.vision_model
         content = payload["input"][0]["content"]
         prompt = json.loads(content[0]["text"])
         assert prompt["profile"]["focus"] == "Aşk"

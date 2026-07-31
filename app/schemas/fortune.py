@@ -16,6 +16,12 @@ class FortuneAccessState(BaseModel):
     free_used: int = 0
     daily_date: str = ""
     is_premium: bool = False
+    expires_at: str | None = None
+    premium_until: str | None = None
+    lifetime: bool = False
+    lifetime_premium: bool = False
+    authoritative_subscription_state: bool = True
+    subscription_provider: str | None = None
     user_message: str | None = None
     authoritative_daily_state: bool = True
     daily_reset_applied: bool = False

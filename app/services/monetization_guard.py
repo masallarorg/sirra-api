@@ -33,6 +33,7 @@ PREMIUM_PRODUCT_DURATIONS: dict[str, int] = {
     "sirra_premium_yearly": 365,
     "welcome_trial_2_days": 2,
     "welcome_trial_1_day": 2,
+    "admin_premium_grant": 30,
 }
 
 
@@ -352,11 +353,14 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
         premium_device_ok = True
         active_devices_patch = None
         premium_expires_at = _subscription_expires_at(sub) if active_premium else None
+        lifetime_premium = bool(active_premium and _subscription_has_lifetime_access(sub))
+        subscription_provider = str((sub or {}).get("provider") or "").strip() or None
         if active_premium:
             premium_device_ok, active_devices_patch = premium_device_allowed(sub, device_id)
             active_premium = active_premium and premium_device_ok
             if not active_premium:
                 premium_expires_at = None
+                lifetime_premium = False
 
         data = access_snap.to_dict() if access_snap.exists else {}
         if not data:
@@ -440,6 +444,10 @@ async def reserve_fortune_access(*, user_id: str, fortune_type: str, device_id: 
                 "is_premium": bool(active_premium),
                 "expires_at": premium_expires_at.isoformat() if premium_expires_at else None,
                 "premium_until": premium_expires_at.isoformat() if premium_expires_at else None,
+                "lifetime": lifetime_premium,
+                "lifetime_premium": lifetime_premium,
+                "authoritative_subscription_state": True,
+                "subscription_provider": subscription_provider,
                 "user_message": user_message,
                 "authoritative_daily_state": True,
                 "daily_reset_applied": daily_reset_applied,

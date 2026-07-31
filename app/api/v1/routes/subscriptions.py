@@ -353,6 +353,8 @@ def _reconcile_premium_access_state(db, user_id: str, *, access_kind: str = "sub
 
     active = _is_subscription_active(sub)
     expires_at = _subscription_expires_at(sub) if active else None
+    lifetime_premium = bool(active and _subscription_has_lifetime_access(sub))
+    subscription_provider = str((sub or {}).get("provider") or "").strip() or None
     today = daily_access_key()
     now = datetime.now(UTC)
 
@@ -395,6 +397,10 @@ def _reconcile_premium_access_state(db, user_id: str, *, access_kind: str = "sub
         "is_premium": bool(active),
         "expires_at": expires_at.isoformat() if expires_at else None,
         "premium_until": expires_at.isoformat() if expires_at else None,
+        "lifetime": lifetime_premium,
+        "lifetime_premium": lifetime_premium,
+        "authoritative_subscription_state": True,
+        "subscription_provider": subscription_provider,
         "user_message": None,
         "authoritative_daily_state": True,
         "force_daily_decrease": daily_reset_applied,

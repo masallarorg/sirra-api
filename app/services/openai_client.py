@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 from typing import Any
 
@@ -11,6 +12,7 @@ from app.core.config import settings
 from app.core.errors import AppError
 
 _OPENAI_CLIENT: httpx.AsyncClient | None = None
+logger = logging.getLogger("uvicorn.error")
 _RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 
 
@@ -118,10 +120,12 @@ async def call_openai_responses(
             await asyncio.sleep(wait + random.random() * 0.2)
             continue
 
+        error_detail = _error_body(response)
+        logger.error("OpenAI request failed code=%s %s", error_code, error_detail)
         raise AppError(
             error_code=f"{error_code}_RESPONSE",
             user_message=user_message,
-            developer_message=_error_body(response),
+            developer_message=error_detail,
             status_code=502 if response.status_code >= 500 else 400,
             retryable=response.status_code in _RETRYABLE_STATUS_CODES,
         )
@@ -206,10 +210,12 @@ async def call_openai_image_edit(
             await asyncio.sleep(min(2.5, 0.5 * (2**attempt)) + random.random() * 0.2)
             continue
 
+        error_detail = _error_body(response)
+        logger.error("OpenAI request failed code=%s %s", error_code, error_detail)
         raise AppError(
             error_code=f"{error_code}_RESPONSE",
             user_message=user_message,
-            developer_message=_error_body(response),
+            developer_message=error_detail,
             status_code=502 if response.status_code >= 500 else 400,
             retryable=response.status_code in _RETRYABLE_STATUS_CODES,
         )
@@ -290,10 +296,12 @@ async def call_openai_image_generate(
             await asyncio.sleep(min(2.5, 0.5 * (2**attempt)) + random.random() * 0.2)
             continue
 
+        error_detail = _error_body(response)
+        logger.error("OpenAI request failed code=%s %s", error_code, error_detail)
         raise AppError(
             error_code=f"{error_code}_RESPONSE",
             user_message=user_message,
-            developer_message=_error_body(response),
+            developer_message=error_detail,
             status_code=502 if response.status_code >= 500 else 400,
             retryable=response.status_code in _RETRYABLE_STATUS_CODES,
         )

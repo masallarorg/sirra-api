@@ -274,6 +274,7 @@ async def admin_set_premium(
             "product_id": "sirra_premium_lifetime" if request.lifetime else "admin_premium_grant",
             "started_at": now.isoformat(),
             "expires_at": expires_at.isoformat() if expires_at else None,
+            "duration_days": None if request.lifetime else (request.days or 30),
             "lifetime": request.lifetime,
             "admin_reason": request.reason,
             "admin_uid": admin.uid,
