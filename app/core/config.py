@@ -1,6 +1,16 @@
 from functools import cached_property
 from urllib.parse import unquote, urlparse
 
+
+def _clean_env_secret(value: str | None, key_name: str) -> str:
+    text = str(value or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"\"", "\'"}:
+        text = text[1:-1].strip()
+    prefix = f"{key_name}="
+    if text.upper().startswith(prefix):
+        text = text[len(prefix):].strip()
+    return text
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -76,13 +86,13 @@ class Settings(BaseSettings):
         cloudinary://API_KEY:API_SECRET@CLOUD_NAME
         Separate environment variables remain supported for easier rotation.
         """
-        cloud_name = str(self.cloudinary_cloud_name or "").strip()
-        api_key = str(self.cloudinary_api_key or "").strip()
-        api_secret = str(self.cloudinary_api_secret or "").strip()
+        cloud_name = _clean_env_secret(self.cloudinary_cloud_name, "CLOUDINARY_CLOUD_NAME")
+        api_key = _clean_env_secret(self.cloudinary_api_key, "CLOUDINARY_API_KEY")
+        api_secret = _clean_env_secret(self.cloudinary_api_secret, "CLOUDINARY_API_SECRET")
         if cloud_name and api_key and api_secret:
             return cloud_name, api_key, api_secret
 
-        raw_url = str(self.cloudinary_url or "").strip()
+        raw_url = _clean_env_secret(self.cloudinary_url, "CLOUDINARY_URL")
         if not raw_url:
             return None
         parsed = urlparse(raw_url)
@@ -94,6 +104,18 @@ class Settings(BaseSettings):
         if not (parsed_cloud and parsed_key and parsed_secret):
             return None
         return parsed_cloud, parsed_key, parsed_secret
+
+
+    @property
+    def cloudinary_credential_source(self) -> str:
+        cloud_name = _clean_env_secret(self.cloudinary_cloud_name, "CLOUDINARY_CLOUD_NAME")
+        api_key = _clean_env_secret(self.cloudinary_api_key, "CLOUDINARY_API_KEY")
+        api_secret = _clean_env_secret(self.cloudinary_api_secret, "CLOUDINARY_API_SECRET")
+        if cloud_name and api_key and api_secret:
+            return "separate_environment_variables"
+        if _clean_env_secret(self.cloudinary_url, "CLOUDINARY_URL"):
+            return "cloudinary_url"
+        return "missing"
 
     @property
     def cloudinary_configured(self) -> bool:

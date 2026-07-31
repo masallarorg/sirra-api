@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from app.core.config import settings
 from app.core.errors import AppError
-from app.services.openai_client import call_openai_image_generate, call_openai_responses, extract_output_text as extract_openai_output_text, image_data_url
+from app.services.openai_client import call_openai_image_generate, call_openai_responses, extract_output_json, extract_output_text as extract_openai_output_text, image_data_url
 logger = logging.getLogger("uvicorn.error")
 
 
@@ -588,14 +588,21 @@ async def generate_soulmate_fortune(*, user_id: str, profile: dict, image_bytes:
                 user_message="Ruh eşi portresi hazırlanırken sorun oluştu. Lütfen tekrar dene.",
                 timeout_seconds=150.0,
             )
-            content = _extract_output_text(response_json)
-            data = json.loads(content)
+            data = extract_output_json(
+                response_json,
+                empty_error_code="OPENAI_SOULMATE_OUTPUT_EMPTY",
+                invalid_error_code="OPENAI_SOULMATE_JSON_INVALID",
+                user_message="Ruh eşi yorumu beklenen biçimde gelmedi. Lütfen tekrar dene.",
+            )
             data["fortune_id"] = data.get("fortune_id") or f"soulmate_{uuid4().hex[:10]}"
             data["type"] = "soulmate"
             result = GenericFortuneResult.model_validate(data)
         except Exception as exc:
             error_code = getattr(exc, "error_code", type(exc).__name__)
-            logger.warning("Soulmate analysis fallback activated code=%s", error_code)
+            if error_code in {"OPENAI_SOULMATE_JSON_INVALID", "OPENAI_SOULMATE_OUTPUT_EMPTY", "JSONDecodeError"}:
+                logger.info("Soulmate analysis used resilient local fallback code=%s", error_code)
+            else:
+                logger.warning("Soulmate analysis fallback activated code=%s", error_code)
             result = _fallback_soulmate_result(profile=safe_profile)
 
     assert result is not None

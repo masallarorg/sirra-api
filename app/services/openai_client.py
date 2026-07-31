@@ -340,6 +340,84 @@ def extract_output_text(response_json: dict[str, Any], *, empty_error_code: str 
     )
 
 
+def _strip_markdown_json_fence(text: str) -> str:
+    clean = text.strip().lstrip("\ufeff")
+    if not clean.startswith("```"):
+        return clean
+    lines = clean.splitlines()
+    if lines and lines[0].strip().lower() in {"```", "```json", "```javascript", "```js"}:
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _decode_json_object(text: str) -> dict[str, Any]:
+    clean = _strip_markdown_json_fence(text)
+    candidates = [clean]
+    first_brace = clean.find("{")
+    if first_brace > 0:
+        candidates.append(clean[first_brace:])
+
+    decoder = json.JSONDecoder()
+    errors: list[str] = []
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate)
+            if isinstance(value, str):
+                value = json.loads(_strip_markdown_json_fence(value))
+            if isinstance(value, dict):
+                return value
+            errors.append(f"decoded_type={type(value).__name__}")
+        except json.JSONDecodeError as exc:
+            errors.append(str(exc))
+
+        start = candidate.find("{")
+        if start >= 0:
+            try:
+                value, _ = decoder.raw_decode(candidate[start:])
+                if isinstance(value, dict):
+                    return value
+            except json.JSONDecodeError as exc:
+                errors.append(str(exc))
+
+    raise ValueError("; ".join(errors[-3:]) or "No JSON object found")
+
+
+def extract_output_json(
+    response_json: dict[str, Any],
+    *,
+    empty_error_code: str = "OPENAI_OUTPUT_EMPTY",
+    invalid_error_code: str = "OPENAI_OUTPUT_JSON_INVALID",
+    user_message: str = "AI çıktısı beklenen biçimde gelmedi. Lütfen tekrar dene.",
+) -> dict[str, Any]:
+    parsed = response_json.get("output_parsed")
+    if isinstance(parsed, dict):
+        return parsed
+    for item in response_json.get("output", []) or []:
+        if not isinstance(item, dict):
+            continue
+        for content in item.get("content", []) or []:
+            if not isinstance(content, dict):
+                continue
+            for key in ("parsed", "json"):
+                value = content.get(key)
+                if isinstance(value, dict):
+                    return value
+
+    text = extract_output_text(response_json, empty_error_code=empty_error_code, user_message=user_message)
+    try:
+        return _decode_json_object(text)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise AppError(
+            error_code=invalid_error_code,
+            user_message=user_message,
+            developer_message=f"{exc}: {text[:1200]}",
+            status_code=502,
+            retryable=True,
+        ) from exc
+
+
 def json_schema_format(name: str, schema: dict[str, Any]) -> dict[str, Any]:
     return {"format": {"type": "json_schema", "name": name, "strict": True, "schema": schema}}
 

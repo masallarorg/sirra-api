@@ -3,6 +3,9 @@ from __future__ import annotations
 import io
 import logging
 import re
+from urllib.parse import quote
+
+import httpx
 from dataclasses import dataclass
 from typing import Any
 
@@ -40,6 +43,9 @@ def storage_status() -> dict[str, Any]:
         "enabled": storage_enabled(),
         "cloud_name_configured": bool(credentials and credentials[0]),
         "credentials_configured": bool(credentials),
+        "credential_source": settings.cloudinary_credential_source,
+        "api_key_suffix": credentials[1][-4:] if credentials and len(credentials[1]) >= 4 else None,
+        "upload_auth": "sdk_signature_with_basic_auth_fallback",
         "private_delivery": True,
     }
 
@@ -65,6 +71,67 @@ def _configure_cloudinary() -> None:
         api_secret=api_secret,
         secure=True,
     )
+
+
+def _cloudinary_error_text(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+        if isinstance(payload, dict):
+            error = payload.get("error")
+            if isinstance(error, dict) and error.get("message"):
+                return str(error.get("message"))[:500]
+            if error:
+                return str(error)[:500]
+    except Exception:
+        pass
+    return response.text[:500]
+
+
+def _upload_with_basic_auth(
+    *,
+    cloud_name: str,
+    api_key: str,
+    api_secret: str,
+    filename: str,
+    data: bytes,
+    content_type: str,
+    public_id: str,
+    extension: str,
+    uid: str,
+    folder: str,
+) -> dict[str, Any]:
+    endpoint = f"https://api.cloudinary.com/v1_1/{quote(cloud_name, safe='')}/image/upload"
+    form = {
+        "type": "authenticated",
+        "public_id": public_id,
+        "overwrite": "true",
+        "unique_filename": "false",
+        "use_filename": "false",
+        "invalidate": "true",
+        "format": extension,
+        "tags": f"sirra,sirra_user_{uid},sirra_category_{folder}",
+        "context": f"owner_uid={uid}|category={folder}|content_type={content_type}",
+    }
+    with httpx.Client(timeout=httpx.Timeout(75.0, connect=12.0)) as client:
+        response = client.post(
+            endpoint,
+            auth=httpx.BasicAuth(api_key, api_secret),
+            data=form,
+            files={"file": (filename, data, content_type)},
+        )
+    if response.status_code >= 400:
+        raise RuntimeError(
+            f"Cloudinary Basic Auth upload failed status={response.status_code} error={_cloudinary_error_text(response)}"
+        )
+    payload = response.json()
+    if not isinstance(payload, dict) or not payload.get("public_id"):
+        raise RuntimeError("Cloudinary Basic Auth upload returned an invalid response")
+    return payload
+
+
+def _is_authorization_error(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(token in text for token in ("authorizationrequired", "unauthorized", "invalid signature", "api key", "401"))
 
 
 def _private_delivery_url(*, public_id: str, image_format: str, version: int | str | None) -> str:
@@ -116,19 +183,41 @@ def upload_user_bytes(
 
     payload = io.BytesIO(data)
     payload.name = f"{name}.{ext}"
-    response = uploader.upload(
-        payload,
-        resource_type="image",
-        type="authenticated",
-        public_id=public_id,
-        overwrite=True,
-        unique_filename=False,
-        use_filename=False,
-        invalidate=True,
-        format=ext,
-        tags=["sirra", f"sirra_user_{uid}", f"sirra_category_{folder}"],
-        context={"owner_uid": uid, "category": folder, "content_type": content_type},
-    )
+    try:
+        response = uploader.upload(
+            payload,
+            resource_type="image",
+            type="authenticated",
+            public_id=public_id,
+            overwrite=True,
+            unique_filename=False,
+            use_filename=False,
+            invalidate=True,
+            format=ext,
+            tags=["sirra", f"sirra_user_{uid}", f"sirra_category_{folder}"],
+            context={"owner_uid": uid, "category": folder, "content_type": content_type},
+        )
+    except Exception as exc:
+        if not _is_authorization_error(exc):
+            raise
+        cloud_name, api_key, api_secret = settings.cloudinary_credentials or ("", "", "")
+        logger.warning(
+            "Cloudinary SDK authentication was rejected; retrying with server-side Basic Auth cloud=%s key_suffix=%s",
+            cloud_name,
+            api_key[-4:] if len(api_key) >= 4 else "unknown",
+        )
+        response = _upload_with_basic_auth(
+            cloud_name=cloud_name,
+            api_key=api_key,
+            api_secret=api_secret,
+            filename=f"{name}.{ext}",
+            data=data,
+            content_type=content_type,
+            public_id=public_id,
+            extension=ext,
+            uid=uid,
+            folder=folder,
+        )
 
     stored_public_id = str(response.get("public_id") or public_id)
     stored_format = str(response.get("format") or ext)
