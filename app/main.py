@@ -13,7 +13,7 @@ from app.services.object_storage import storage_status
 def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
-        version="1.9.8",
+        version="1.9.9",
         description="Sırra - Fal ve Astroloji API",
     )
 
@@ -45,7 +45,7 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health() -> dict:
-        return {"status": "ok", "environment": settings.environment, "version": "1.9.8", "storage": storage_status()}
+        return {"status": "ok", "environment": settings.environment, "version": "1.9.9", "storage": storage_status()}
 
     @app.on_event("shutdown")
     async def shutdown_event() -> None:

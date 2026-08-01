@@ -5,13 +5,24 @@ import logging
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile
 
 from app.core.config import settings
 from app.core.errors import AppError
 from app.core.security import CurrentUser, require_current_user
 from app.schemas.fortune import CoffeeFortuneResponse, DreamFortuneRequest, DreamFortuneResponse, FortuneFeedbackRequest, FortuneFeedbackResponse, GenericFortuneRequest, GenericFortuneResponse, SirraCompassResponse
-from app.services.openai_fortune import generate_coffee_fortune, generate_dream_fortune, generate_generic_fortune, generate_palm_fortune, generate_soulmate_fortune
+from app.services.openai_fortune import (
+    build_deadline_coffee_fallback,
+    build_deadline_dream_fallback,
+    build_deadline_generic_fallback,
+    build_deadline_palm_fallback,
+    build_deadline_soulmate_fallback,
+    generate_coffee_fortune,
+    generate_dream_fortune,
+    generate_generic_fortune,
+    generate_palm_fortune,
+    generate_soulmate_fortune,
+)
 from app.services.monetization_guard import commit_fortune_access, reserve_fortune_access, refund_fortune_access
 from app.services.symbol_linker import find_cross_fortune_connections
 from app.services.image_validation import prepare_openai_image
@@ -22,6 +33,120 @@ from app.services.object_storage import safe_storage_error, upload_user_bytes
 
 router = APIRouter()
 logger = logging.getLogger("uvicorn.error")
+
+# The premium UI promises a one-minute queue. Remote AI work is therefore
+# capped below that boundary; if it misses the SLA, a complete local result is
+# returned instead of leaving the session pending.
+TEXT_GENERATION_DEADLINE_SECONDS = 35.0
+IMAGE_GENERATION_DEADLINE_SECONDS = 40.0
+PROFILE_ENRICHMENT_DEADLINE_SECONDS = 3.0
+
+
+async def _enrich_profile_bounded(*, user_id: str, profile: dict, focus: str) -> dict:
+    try:
+        return await asyncio.wait_for(
+            enrich_profile_with_memory(user_id=user_id, profile=profile, focus=focus),
+            timeout=PROFILE_ENRICHMENT_DEADLINE_SECONDS,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Profile enrichment skipped to protect fortune SLA uid=%s error=%s",
+            user_id,
+            type(exc).__name__,
+        )
+        return profile
+
+
+async def _finalize_generic_after_response(*, user_id: str, result, request: GenericFortuneRequest, fortune_type: str) -> None:
+    try:
+        result.cross_fortune_connections = await find_cross_fortune_connections(user_id=user_id, new_symbols=result.symbols)
+    except Exception:
+        pass
+    await _save_generic_history(user_id=user_id, result=result, request=request)
+    try:
+        await store_fortune_memory(user_id=user_id, fortune_id=result.fortune_id, fortune_type=result.type, symbols=result.symbols, summary=result.summary, focus=request.focus)
+    except Exception:
+        pass
+    try:
+        await notify_fortune_ready(user_id=user_id, fortune_id=result.fortune_id, title="Fal yorumun", fortune_type=fortune_type)
+    except Exception:
+        pass
+
+
+async def _finalize_coffee_after_response(*, user_id: str, result, profile: dict) -> None:
+    try:
+        result.cross_fortune_connections = await find_cross_fortune_connections(
+            user_id=user_id,
+            new_symbols=[symbol.symbol for symbol in result.detected_symbols],
+        )
+    except Exception:
+        pass
+    await _save_coffee_history(user_id=user_id, result=result, profile=profile)
+    try:
+        await store_fortune_memory(
+            user_id=user_id,
+            fortune_id=result.fortune_id,
+            fortune_type="coffee",
+            symbols=[symbol.symbol for symbol in result.detected_symbols],
+            summary=result.summary,
+            focus=profile.get("focus"),
+        )
+    except Exception:
+        pass
+    try:
+        await notify_fortune_ready(user_id=user_id, fortune_id=result.fortune_id, title="Kahve falın", fortune_type="coffee")
+    except Exception:
+        pass
+
+
+async def _finalize_palm_after_response(*, user_id: str, result, request: GenericFortuneRequest) -> None:
+    try:
+        result.cross_fortune_connections = await find_cross_fortune_connections(user_id=user_id, new_symbols=result.symbols)
+    except Exception:
+        pass
+    await _save_generic_history(user_id=user_id, result=result, request=request)
+    try:
+        await store_fortune_memory(user_id=user_id, fortune_id=result.fortune_id, fortune_type="palm", symbols=result.symbols, summary=result.summary, focus=request.focus)
+    except Exception:
+        pass
+    try:
+        await notify_fortune_ready(user_id=user_id, fortune_id=result.fortune_id, title="El falın", fortune_type="palm")
+    except Exception:
+        pass
+
+
+async def _finalize_soulmate_after_response(*, user_id: str, result, request: GenericFortuneRequest) -> None:
+    # Cloudinary is intentionally after-response. Authentication or network
+    # failures can never delay the user's result. Base64 remains the immediate fallback.
+    await _persist_generated_portrait(user_id=user_id, result=result)
+    try:
+        result.cross_fortune_connections = await find_cross_fortune_connections(user_id=user_id, new_symbols=result.symbols)
+    except Exception:
+        pass
+    await _save_generic_history(user_id=user_id, result=result, request=request)
+    try:
+        await store_fortune_memory(user_id=user_id, fortune_id=result.fortune_id, fortune_type="soulmate", symbols=result.symbols, summary=result.summary, focus=request.focus)
+    except Exception:
+        pass
+    try:
+        await notify_fortune_ready(user_id=user_id, fortune_id=result.fortune_id, title="Ruh eşi portren", fortune_type="soulmate")
+    except Exception:
+        pass
+
+
+async def _finalize_dream_after_response(*, user_id: str, result) -> None:
+    try:
+        result.cross_fortune_connections = await find_cross_fortune_connections(user_id=user_id, new_symbols=result.symbols)
+    except Exception:
+        pass
+    try:
+        await store_fortune_memory(user_id=user_id, fortune_id=result.fortune_id, fortune_type="dream", symbols=result.symbols, summary=result.summary, focus="Rüya")
+    except Exception:
+        pass
+    try:
+        await notify_fortune_ready(user_id=user_id, fortune_id=result.fortune_id, title="Rüya yorumun", fortune_type="dream")
+    except Exception:
+        pass
 
 
 async def _persist_generated_portrait(*, user_id: str, result) -> None:
@@ -80,22 +205,26 @@ async def fortune_feedback(
     return FortuneFeedbackResponse.model_validate(payload)
 
 @router.post("/generate", response_model=GenericFortuneResponse)
-async def generate_fortune(request: GenericFortuneRequest, current_user: CurrentUser = Depends(require_current_user)) -> GenericFortuneResponse:
+async def generate_fortune(request: GenericFortuneRequest, background_tasks: BackgroundTasks, current_user: CurrentUser = Depends(require_current_user)) -> GenericFortuneResponse:
     logger.info("Fortune request started endpoint=generate type=%s uid=%s", request.type_id, current_user.uid)
     request.profile = request.profile or {}
     request.profile["focus"] = request.focus
-    request.profile = await enrich_profile_with_memory(user_id=current_user.uid, profile=request.profile, focus=request.focus)
+    request.profile = await _enrich_profile_bounded(user_id=current_user.uid, profile=request.profile, focus=request.focus)
     reservation = await reserve_fortune_access(user_id=current_user.uid, fortune_type=request.type_id, device_id=current_user.device_id)
     try:
-        result = await generate_generic_fortune(request)
-        result.cross_fortune_connections = await find_cross_fortune_connections(
-            user_id=current_user.uid,
-            new_symbols=result.symbols,
-        )
-        await _save_generic_history(user_id=current_user.uid, result=result, request=request)
-        await store_fortune_memory(user_id=current_user.uid, fortune_id=result.fortune_id, fortune_type=result.type, symbols=result.symbols, summary=result.summary, focus=request.focus)
-        await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="Fal yorumun", fortune_type=request.type_id)
+        try:
+            result = await asyncio.wait_for(generate_generic_fortune(request), timeout=TEXT_GENERATION_DEADLINE_SECONDS)
+        except TimeoutError:
+            result = build_deadline_generic_fallback(request, reason="hard_deadline")
+            logger.warning("Fortune generation exceeded SLA endpoint=generate type=%s uid=%s", request.type_id, current_user.uid)
         await commit_fortune_access(reservation)
+        background_tasks.add_task(
+            _finalize_generic_after_response,
+            user_id=current_user.uid,
+            result=result,
+            request=request,
+            fortune_type=request.type_id,
+        )
         logger.info("Fortune request completed endpoint=generate type=%s uid=%s fortune_id=%s", request.type_id, current_user.uid, result.fortune_id)
         return GenericFortuneResponse(fortune_id=result.fortune_id, status="completed", result=result, access=reservation.access_state)
     except Exception:
@@ -105,6 +234,7 @@ async def generate_fortune(request: GenericFortuneRequest, current_user: Current
 
 @router.post("/coffee", response_model=CoffeeFortuneResponse)
 async def coffee_fortune(
+    background_tasks: BackgroundTasks,
     images: Annotated[list[UploadFile], File()],
     profile_json: Annotated[str, Form()] = "{}",
     focus: Annotated[str, Form()] = "Genel enerji",
@@ -130,7 +260,7 @@ async def coffee_fortune(
         ) from exc
 
     profile["focus"] = focus or profile.get("focus") or "Genel enerji"
-    profile = await enrich_profile_with_memory(user_id=current_user.uid, profile=profile, focus=profile["focus"])
+    profile = await _enrich_profile_bounded(user_id=current_user.uid, profile=profile, focus=profile["focus"])
 
     image_bytes: list[bytes] = []
     for image in images:
@@ -144,15 +274,16 @@ async def coffee_fortune(
 
     reservation = await reserve_fortune_access(user_id=current_user.uid, fortune_type="coffee", device_id=current_user.device_id)
     try:
-        result = await generate_coffee_fortune(user_id=current_user.uid, profile=profile, image_bytes=image_bytes)
-        result.cross_fortune_connections = await find_cross_fortune_connections(
-            user_id=current_user.uid,
-            new_symbols=[symbol.symbol for symbol in result.detected_symbols],
-        )
-        await _save_coffee_history(user_id=current_user.uid, result=result, profile=profile)
-        await store_fortune_memory(user_id=current_user.uid, fortune_id=result.fortune_id, fortune_type="coffee", symbols=[symbol.symbol for symbol in result.detected_symbols], summary=result.summary, focus=profile.get("focus"))
-        await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="Kahve falın", fortune_type="coffee")
+        try:
+            result = await asyncio.wait_for(
+                generate_coffee_fortune(user_id=current_user.uid, profile=profile, image_bytes=image_bytes),
+                timeout=IMAGE_GENERATION_DEADLINE_SECONDS,
+            )
+        except TimeoutError:
+            result = build_deadline_coffee_fallback(profile=profile, image_count=len(image_bytes), reason="hard_deadline")
+            logger.warning("Fortune generation exceeded SLA endpoint=coffee uid=%s", current_user.uid)
         await commit_fortune_access(reservation)
+        background_tasks.add_task(_finalize_coffee_after_response, user_id=current_user.uid, result=result, profile=profile)
         logger.info("Fortune request completed endpoint=coffee uid=%s fortune_id=%s", current_user.uid, result.fortune_id)
 
         return CoffeeFortuneResponse(
@@ -169,6 +300,7 @@ async def coffee_fortune(
 
 @router.post("/palm", response_model=GenericFortuneResponse)
 async def palm_fortune(
+    background_tasks: BackgroundTasks,
     right_palm_image: Annotated[UploadFile, File()],
     left_palm_image: Annotated[UploadFile, File()],
     profile_json: Annotated[str, Form()] = "{}",
@@ -202,24 +334,25 @@ async def palm_fortune(
     profile["question"] = question
     profile["right_palm_uploaded"] = True
     profile["left_palm_uploaded"] = True
-    profile = await enrich_profile_with_memory(user_id=current_user.uid, profile=profile, focus=focus)
+    profile = await _enrich_profile_bounded(user_id=current_user.uid, profile=profile, focus=focus)
     reservation = await reserve_fortune_access(user_id=current_user.uid, fortune_type="palm", device_id=current_user.device_id)
     try:
-        result = await generate_palm_fortune(user_id=current_user.uid, profile=profile, right_image_bytes=right_data, left_image_bytes=left_data)
-        result.cross_fortune_connections = await find_cross_fortune_connections(
-            user_id=current_user.uid,
-            new_symbols=result.symbols,
-        )
+        try:
+            result = await asyncio.wait_for(
+                generate_palm_fortune(user_id=current_user.uid, profile=profile, right_image_bytes=right_data, left_image_bytes=left_data),
+                timeout=IMAGE_GENERATION_DEADLINE_SECONDS,
+            )
+        except TimeoutError:
+            result = build_deadline_palm_fallback(profile=profile, reason="hard_deadline")
+            logger.warning("Fortune generation exceeded SLA endpoint=palm uid=%s", current_user.uid)
         request = GenericFortuneRequest(
             type_id="palm",
             focus=focus,
             payload={"hand": hand, "question": question, "right_palm_photo_added": True, "left_palm_photo_added": True, "analysis_mode": "real_two_hand_palm_photo"},
             profile=profile,
         )
-        await _save_generic_history(user_id=current_user.uid, result=result, request=request)
-        await store_fortune_memory(user_id=current_user.uid, fortune_id=result.fortune_id, fortune_type=result.type, symbols=result.symbols, summary=result.summary, focus=focus)
-        await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="El falın", fortune_type="palm")
         await commit_fortune_access(reservation)
+        background_tasks.add_task(_finalize_palm_after_response, user_id=current_user.uid, result=result, request=request)
         logger.info("Fortune request completed endpoint=palm uid=%s fortune_id=%s", current_user.uid, result.fortune_id)
         return GenericFortuneResponse(fortune_id=result.fortune_id, status="completed", result=result, access=reservation.access_state)
     except Exception:
@@ -229,6 +362,7 @@ async def palm_fortune(
 
 @router.post("/soulmate", response_model=GenericFortuneResponse)
 async def soulmate_fortune(
+    background_tasks: BackgroundTasks,
     selfie: Annotated[UploadFile, File()],
     profile_json: Annotated[str, Form()] = "{}",
     focus: Annotated[str, Form()] = "Aşk",
@@ -252,20 +386,20 @@ async def soulmate_fortune(
         ) from exc
     profile["focus"] = focus
     profile["theme"] = theme
-    profile = await enrich_profile_with_memory(user_id=current_user.uid, profile=profile, focus=focus)
+    profile = await _enrich_profile_bounded(user_id=current_user.uid, profile=profile, focus=focus)
     reservation = await reserve_fortune_access(user_id=current_user.uid, fortune_type="soulmate", device_id=current_user.device_id)
     try:
-        result = await generate_soulmate_fortune(user_id=current_user.uid, profile=profile, image_bytes=data)
-        await _persist_generated_portrait(user_id=current_user.uid, result=result)
-        result.cross_fortune_connections = await find_cross_fortune_connections(
-            user_id=current_user.uid,
-            new_symbols=result.symbols,
-        )
+        try:
+            result = await asyncio.wait_for(
+                generate_soulmate_fortune(user_id=current_user.uid, profile=profile, image_bytes=data),
+                timeout=IMAGE_GENERATION_DEADLINE_SECONDS,
+            )
+        except TimeoutError:
+            result = build_deadline_soulmate_fallback(user_id=current_user.uid, profile=profile, reason="hard_deadline")
+            logger.warning("Fortune generation exceeded SLA endpoint=soulmate uid=%s", current_user.uid)
         request = GenericFortuneRequest(type_id="soulmate", focus=focus, payload={"theme": theme, "selfie_added": True}, profile=profile)
-        await _save_generic_history(user_id=current_user.uid, result=result, request=request)
-        await store_fortune_memory(user_id=current_user.uid, fortune_id=result.fortune_id, fortune_type=result.type, symbols=result.symbols, summary=result.summary, focus=focus)
-        await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="Ruh eşi portren", fortune_type="soulmate")
         await commit_fortune_access(reservation)
+        background_tasks.add_task(_finalize_soulmate_after_response, user_id=current_user.uid, result=result, request=request)
         logger.info("Fortune request completed endpoint=soulmate uid=%s fortune_id=%s", current_user.uid, result.fortune_id)
         return GenericFortuneResponse(fortune_id=result.fortune_id, status="completed", result=result, access=reservation.access_state)
     except Exception:
@@ -274,19 +408,18 @@ async def soulmate_fortune(
 
 
 @router.post("/dream", response_model=DreamFortuneResponse)
-async def dream_fortune(request: DreamFortuneRequest, current_user: CurrentUser = Depends(require_current_user)) -> DreamFortuneResponse:
+async def dream_fortune(request: DreamFortuneRequest, background_tasks: BackgroundTasks, current_user: CurrentUser = Depends(require_current_user)) -> DreamFortuneResponse:
     request.user_id = current_user.uid
-    request.profile = await enrich_profile_with_memory(user_id=current_user.uid, profile=request.profile or {}, focus="Rüya")
+    request.profile = await _enrich_profile_bounded(user_id=current_user.uid, profile=request.profile or {}, focus="Rüya")
     reservation = await reserve_fortune_access(user_id=current_user.uid, fortune_type="dream", device_id=current_user.device_id)
     try:
-        result = await generate_dream_fortune(request)
-        result.cross_fortune_connections = await find_cross_fortune_connections(
-            user_id=current_user.uid,
-            new_symbols=result.symbols,
-        )
-        await store_fortune_memory(user_id=current_user.uid, fortune_id=result.fortune_id, fortune_type=result.type, symbols=result.symbols, summary=result.summary, focus="Rüya")
-        await notify_fortune_ready(user_id=current_user.uid, fortune_id=result.fortune_id, title="Rüya yorumun", fortune_type="dream")
+        try:
+            result = await asyncio.wait_for(generate_dream_fortune(request), timeout=TEXT_GENERATION_DEADLINE_SECONDS)
+        except TimeoutError:
+            result = build_deadline_dream_fallback(request, reason="hard_deadline")
+            logger.warning("Fortune generation exceeded SLA endpoint=dream uid=%s", current_user.uid)
         await commit_fortune_access(reservation)
+        background_tasks.add_task(_finalize_dream_after_response, user_id=current_user.uid, result=result)
         return DreamFortuneResponse(status="completed", result=result, access=reservation.access_state)
     except Exception:
         await refund_fortune_access(reservation)

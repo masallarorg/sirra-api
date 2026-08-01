@@ -831,6 +831,129 @@ async def generate_palm_fortune(*, user_id: str, profile: dict, right_image_byte
     return _augment_generic_result(result, safe_profile, focus)
 
 
+
+def build_deadline_generic_fallback(request: GenericFortuneRequest, *, reason: str = "deadline") -> GenericFortuneResult:
+    """Return a complete local reading when the remote SLA deadline expires."""
+    type_id = (request.type_id or "oracle").strip().lower() or "oracle"
+    profile = request.profile or {}
+    focus = request.focus or profile.get("focus") or "Genel enerji"
+    result = _mock_generic_result(type_id=type_id, request=request)
+    result.fortune_id = result.fortune_id or f"{type_id}_{uuid4().hex[:10]}"
+    result.type = type_id
+    if result.sections:
+        result.sections.append(
+            FortuneDetailBlock(
+                title="Süre garantili yorum",
+                text=(
+                    "Uzak yorum servisi belirlenen süre içinde tamamlanmadığı için hakkını bekletmeden "
+                    "profilin, niyetin ve seçtiğin fal türüne göre hazırlanmış güvenli sembolik yorum gösterildi."
+                ),
+            )
+        )
+    logger.info("Fortune SLA fallback produced type=%s reason=%s", type_id, reason)
+    return _augment_generic_result(result, profile, focus)
+
+
+def build_deadline_coffee_fallback(*, profile: dict, image_count: int, reason: str = "deadline") -> CoffeeFortuneResult:
+    safe_profile = profile if isinstance(profile, dict) else {}
+    result = _mock_coffee_result(image_count=max(1, image_count))
+    result.title = "Fincanında Açılan Yol"
+    result.summary = (
+        "Görsel yorum servisi belirlenen süreyi aştığı için seni bekletmeden fincan niyetine göre "
+        "umut veren, güvenli bir geçiş yorumu hazırlandı."
+    )
+    result.detected_symbols = []
+    logger.info("Coffee SLA fallback produced reason=%s", reason)
+    return _augment_coffee_result(result, safe_profile)
+
+
+def build_deadline_palm_fallback(*, profile: dict, reason: str = "deadline") -> GenericFortuneResult:
+    safe_profile = profile if isinstance(profile, dict) else {}
+    focus = str(safe_profile.get("focus") or "Genel enerji").strip() or "Genel enerji"
+    request = GenericFortuneRequest(
+        type_id="palm",
+        focus=focus,
+        payload={
+            "hand": safe_profile.get("hand") or "Sağ ve sol el",
+            "question": safe_profile.get("question") or "",
+            "right_palm_photo_added": True,
+            "left_palm_photo_added": True,
+        },
+        profile=safe_profile,
+    )
+    result = _mock_generic_result(type_id="palm", request=request)
+    result.title = "Geçmişten Geleceğe El Falın"
+    result.summary = (
+        "Ellerindeki enerji, geçmişte yarım kalan bir kararın kapanışa yaklaştığını ve önünde "
+        "daha açık, umut veren bir dönemin oluştuğunu anlatıyor."
+    )
+    result.primary_message = (
+        "Uzun süredir taşıdığın bir belirsizlik hafifliyor; önümüzdeki haftalarda gelecek bir haber, "
+        "görüşme veya yeni teklif seni daha güvenli bir yola yöneltebilir."
+    )
+    result.sections = [
+        FortuneDetailBlock(title="Geçmişten taşınan iz", text="Bir dönem kendi isteğini geri plana atıp başkalarının kararlarına uyum sağladığın görünüyor. Bunun bıraktığı yorgunluk azalıyor; artık daha net sınırlar kuruyorsun."),
+        FortuneDetailBlock(title="Bugünkü dönüm noktası", text="Şu an iki seçenek arasında kalmış olabilirsin. Acele bir kopuştan çok doğru zamanı bekleyerek yapılacak sakin bir değişim daha iyi sonuç verebilir."),
+        FortuneDetailBlock(title="Aşk ve kalp yolu", text="Geçmişten kalan bir kırgınlık kapanmaya başlıyor. İletişimi yarım kalmış biri haber verebilir; bunun yanında daha güven veren yeni bir tanışma ihtimali de güçleniyor."),
+        FortuneDetailBlock(title="İş ve para kapısı", text="Küçük görünen bir teklif, görev değişimi veya ek gelir fırsatı büyüyebilir. Düzenli ilerlersen önümüzdeki bir iki ay içinde rahatlatıcı bir gelişme yaşayabilirsin."),
+        FortuneDetailBlock(title="Yakın gelecek", text="Üç ila on gün içinde bir mesaj veya kısa görüşme; sonraki iki ila dört haftada ise daha net bir karar enerjisi var."),
+        FortuneDetailBlock(title="Dilek enerjisi", text="Dileğin iki aşamada gerçekleşmeye yakın görünüyor: önce küçük bir işaret veya haber, ardından sonucu belirleyen daha güçlü bir gelişme."),
+        FortuneDetailBlock(title="Sana kalan mesaj", text="Geçmişteki gecikmeleri başarısızlık olarak görme. Bu dönem daha doğru kişiyi, işi veya yolu seçebilmen için seni hazırlayan bir eşikten çıkış taşıyor."),
+        FortuneDetailBlock(title="Süre garantili yorum", text="Görsel analiz belirlenen süre içinde tamamlanmadığı için hakkını bekletmeden güvenli sembolik el falı gösterildi."),
+    ]
+    result.symbols = ["yasam_cizgisi", "kalp_cizgisi", "zihin_cizgisi", "kader_cizgisi", "mesaj"]
+    logger.info("Palm SLA fallback produced reason=%s", reason)
+    return _augment_generic_result(result, safe_profile, focus)
+
+
+def build_deadline_soulmate_fallback(*, user_id: str, profile: dict, reason: str = "deadline") -> GenericFortuneResult:
+    safe_profile = profile if isinstance(profile, dict) else {}
+    focus = str(safe_profile.get("focus") or "Aşk").strip() or "Aşk"
+    result = _fallback_soulmate_result(profile=safe_profile)
+    counterpart_gender = _normalized_counterpart_gender(safe_profile)
+    portrait_base64, portrait_mime_type = _local_graphite_soulmate_portrait(
+        user_id=user_id,
+        profile=safe_profile,
+        reading=result,
+        counterpart_gender=counterpart_gender,
+    )
+    result.fortune_id = result.fortune_id or f"soulmate_{uuid4().hex[:10]}"
+    result.type = "soulmate"
+    result.portrait_image_base64 = portrait_base64
+    result.portrait_mime_type = portrait_mime_type
+    result.sections.append(
+        FortuneDetailBlock(
+            title="Süre garantili portre",
+            text="Uzak görsel üretim servisi belirlenen süreyi aştığı için seni bekletmeden karşı cins tercihine uygun yerel kara kalem portre hazırlandı.",
+        )
+    )
+    logger.info("Soulmate SLA fallback produced reason=%s gender=%s", reason, counterpart_gender)
+    return _augment_generic_result(result, safe_profile, focus)
+
+
+def build_deadline_dream_fallback(request: DreamFortuneRequest, *, reason: str = "deadline") -> DreamFortuneResult:
+    profile = request.profile or {}
+    dream_text = (request.dream_text or "").lower()
+    symbols: list[str] = []
+    for token, symbol in (("su", "su"), ("deniz", "deniz"), ("yol", "yol"), ("kuş", "kus"), ("kus", "kus"), ("ev", "ev"), ("kapı", "kapi"), ("kapi", "kapi")):
+        if token in dream_text and symbol not in symbols:
+            symbols.append(symbol)
+    if not symbols:
+        symbols = ["yol"]
+    result = DreamFortuneResult(
+        fortune_id=f"dream_{uuid4().hex[:10]}",
+        title="Rüyanda Açılan İşaret",
+        summary="Rüyan, geçmişten kalan bir duygunun kapanışa yaklaştığını ve önünde yeni bir karar kapısının açıldığını gösteriyor.",
+        symbols=symbols,
+        interpretation=(
+            "Yakın günlerde alacağın bir haber ya da yapacağın kısa bir görüşme, zihnindeki belirsizliği azaltabilir. "
+            "Rüyan kesin bir gelecek garantisi değil; fakat daha umutlu bir başlangıca hazırlanma enerjisi taşıyor."
+        ),
+        premium_locks=[],
+    )
+    logger.info("Dream SLA fallback produced reason=%s", reason)
+    return _augment_dream_result(result, profile)
+
 def _palm_developer_instructions() -> str:
     return """
 You are a premium Turkish palm fortune-teller, not a scientific palm-anatomy analyst.
