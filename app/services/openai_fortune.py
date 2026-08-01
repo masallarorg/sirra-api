@@ -655,8 +655,8 @@ async def generate_soulmate_fortune(*, user_id: str, profile: dict, image_bytes:
         "neutral": "The portrait may depict a softly androgynous adult romantic counterpart.",
     }.get(counterpart_gender, "The portrait should depict a fictional adult romantic counterpart.")
     portrait_prompt = f"""
-Create a premium graphite pencil portrait on textured ivory paper of exactly one fictional adult romantic counterpart.
-This must be a newly invented person, not the customer from the uploaded selfie and not a copy or transformation of any real face.
+Create a premium, realistic graphite pencil portrait on textured ivory paper of exactly one fictional adult romantic counterpart. The result must look like a believable real human sketch, not a symbol, mask, icon, emoji, orb, or abstract face.
+This must be a newly invented person, not the customer from the uploaded selfie and not a copy or transformation of any real face. Show only one adult partner portrait with natural facial anatomy, expressive eyes, nose, mouth, hair, shoulders, and a clean portrait composition.
 {gender_clause}
 The selfie was used only upstream to understand the customer's requested mood; it is not an image reference for this generation.
 Draw a plausible compatible partner archetype with expressive eyes, natural adult anatomy, professional charcoal and graphite detail,
