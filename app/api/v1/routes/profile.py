@@ -75,6 +75,49 @@ def _parse_datetime(value: Any) -> datetime | None:
         return None
 
 
+def _apply_auto_astrology(payload: dict[str, Any]) -> None:
+    """Fill sun, moon and rising signs when complete birth data is available.
+
+    Profile saving must never fail just because astrology data is incomplete or
+    temporarily invalid. Manual astrology values are preserved when automatic
+    filling is disabled.
+    """
+    if payload.get("astrology_auto_fill", True) is False:
+        return
+
+    birth_date = _clean(payload.get("birth_date"))
+    birth_time = _clean(payload.get("birth_time"))
+    latitude = payload.get("birth_latitude")
+    longitude = payload.get("birth_longitude")
+    timezone_name = _clean(payload.get("birth_timezone")) or "Europe/Istanbul"
+
+    if not birth_date or not birth_time or latitude is None or longitude is None:
+        return
+
+    try:
+        result = calculate_natal_summary(
+            birth_date=birth_date,
+            birth_time=birth_time,
+            latitude=float(latitude),
+            longitude=float(longitude),
+            timezone_name=timezone_name,
+        )
+    except (TypeError, ValueError) as exc:
+        logger.warning("Profile astrology autofill skipped: invalid input error=%s", type(exc).__name__)
+        return
+    except Exception as exc:
+        logger.warning("Profile astrology autofill skipped: calculation error=%s", type(exc).__name__)
+        return
+
+    payload["zodiac_label"] = result.sun_sign
+    payload["moon_sign"] = result.moon_sign
+    payload["rising_sign"] = result.rising_sign
+    payload["astrology_calculation_quality"] = result.quality
+    payload["birth_timezone"] = result.timezone
+    payload["birth_latitude"] = result.latitude
+    payload["birth_longitude"] = result.longitude
+
+
 def _payload_from_profile(profile: UserProfile, current_user: CurrentUser) -> dict[str, Any]:
     now = datetime.now(UTC)
     email = _clean(profile.email) or _clean(current_user.email)
